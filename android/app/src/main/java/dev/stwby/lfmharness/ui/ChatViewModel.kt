@@ -77,6 +77,9 @@ sealed interface ModelState {
     data class Ready(val name: String) : ModelState
 }
 
+/** A model file kept in the app's private storage. */
+data class StoredModel(val name: String, val sizeBytes: Long)
+
 /** A tool call waiting for the user's approval. */
 data class PendingConfirm(val name: String, val args: Map<String, String>, val answer: CompletableDeferred<Boolean>)
 
@@ -86,6 +89,8 @@ data class UiState(
     /** Null until the first message of a new chat is sent. */
     val currentId: Long? = null,
     val model: ModelState = ModelState.None,
+    /** Every imported model; the active one is named by [model]. */
+    val models: List<StoredModel> = emptyList(),
     val generating: Boolean = false,
     val settings: Settings = Settings(),
     val confirm: PendingConfirm? = null,
@@ -103,6 +108,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private var tempId = -1L
 
     init {
+        refreshModels()
         val path = prefs.getString("model_path", null)
         if (path != null && File(path).isFile) {
             if (LlmEngine.isLoaded) _state.update { it.copy(model = ModelState.Ready(File(path).name)) }
@@ -185,6 +191,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 _state.update { it.copy(model = ModelState.Importing(0f), error = null) }
                 val file = withContext(Dispatchers.IO) { copyToModels(uri) }
+                refreshModels()
                 loadModel(file)
             } catch (e: Exception) {
                 _state.update { it.copy(model = ModelState.None, error = "Importación fallida: ${e.message}") }
@@ -203,8 +210,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         require(name.endsWith(".gguf", ignoreCase = true)) { "el archivo no es .gguf" }
-        // Only one model is kept on disk.
-        modelsDir.listFiles()?.forEach { it.delete() }
+        require(!name.contains('/') && !name.endsWith(".part")) { "nombre de archivo no válido" }
         val out = File(modelsDir, name)
         val tmp = File(modelsDir, "$name.part")
         resolver.openInputStream(uri)!!.use { input ->
@@ -227,8 +233,40 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
+        // Re-importing a file with the same name replaces it.
+        out.delete()
         check(tmp.renameTo(out)) { "no se pudo guardar el modelo" }
         return out
+    }
+
+    private fun refreshModels() {
+        val list = modelsDir.listFiles { f -> f.isFile && f.name.endsWith(".gguf", ignoreCase = true) }
+            ?.map { StoredModel(it.name, it.length()) }?.sortedBy { it.name } ?: emptyList()
+        _state.update { it.copy(models = list) }
+    }
+
+    /** Switches to another imported model (not while generating). */
+    fun selectModel(name: String) {
+        val s = _state.value
+        if (s.generating || (s.model as? ModelState.Ready)?.name == name) return
+        val file = File(modelsDir, name).takeIf { it.isFile } ?: return
+        loadModel(file)
+    }
+
+    /** Deletes an imported model; the active one cannot be deleted. */
+    fun deleteModel(name: String) {
+        val s = _state.value
+        val active = when (val m = s.model) {
+            is ModelState.Ready -> m.name
+            is ModelState.Loading -> m.name
+            else -> null
+        }
+        if (s.generating || name == active) {
+            _state.update { it.copy(error = "No se puede borrar el modelo en uso") }
+            return
+        }
+        File(modelsDir, name).delete()
+        refreshModels()
     }
 
     private fun loadModel(file: File) {

@@ -39,7 +39,7 @@ El modelo de uso diario es el fine-tune `LFM3-1.7B-Uncensored-AD`. Antes de camb
 - [ ] Explicación opcional tras el bloque de código (segunda generación corta).
 
 ### 8. Gestión de modelos
-- [ ] Varios modelos importados, cambiar entre ellos, borrar y ver el espacio usado.
+- [x] Varios modelos importados, cambiar entre ellos y borrar los inactivos; el tamaño de cada uno se ve en el menú (toca el nombre del modelo en la barra superior). Probado: compila; falta la prueba en el móvil.
 - [ ] Perfiles de muestreo por modelo.
 
 ### 9. Robustez y experiencia

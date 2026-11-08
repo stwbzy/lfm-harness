@@ -135,7 +135,40 @@ fun ChatScreen(vm: ChatViewModel) {
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
-                        Text(modelLabel(state.model), style = MaterialTheme.typography.labelSmall)
+                        var showModels by remember { mutableStateOf(false) }
+                        Box {
+                            Text(
+                                modelLabel(state.model) + if (state.models.size > 1) " ▾" else "",
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier.clickable(enabled = !state.generating && state.models.isNotEmpty()) { showModels = true },
+                            )
+                            DropdownMenu(expanded = showModels, onDismissRequest = { showModels = false }) {
+                                val active = (state.model as? ModelState.Ready)?.name
+                                state.models.forEach { m ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Column {
+                                                Text((if (m.name == active) "✓ " else "") + m.name)
+                                                Text("%.2f GB".format(m.sizeBytes / 1e9), style = MaterialTheme.typography.labelSmall)
+                                            }
+                                        },
+                                        onClick = { showModels = false; vm.selectModel(m.name) },
+                                        trailingIcon = {
+                                            if (m.name != active) {
+                                                IconButton(onClick = { showModels = false; vm.deleteModel(m.name) }) {
+                                                    Icon(Icons.Default.Delete, "Borrar modelo")
+                                                }
+                                            }
+                                        },
+                                    )
+                                }
+                                HorizontalDivider()
+                                DropdownMenuItem(
+                                    text = { Text("Importar otro modelo…") },
+                                    onClick = { showModels = false; picker.launch(arrayOf("*/*")) },
+                                )
+                            }
+                        }
                     }
                 },
                 actions = {
