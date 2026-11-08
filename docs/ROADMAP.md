@@ -18,12 +18,12 @@ lo que modifica datos pasa por el usuario. Las decisiones se toman con datos med
 
 ## Próximo
 
-### 6. Evaluar el modelo oficial LFM3-1.7B (pendiente de decisión)
+### 6. Evaluar el modelo oficial LFM3-1.7B (en curso: QAD-Q4_0 elegido el 2026-11-08)
 El modelo de uso diario es el fine-tune `LFM3-1.7B-Uncensored-AD`. Antes de cambiar:
-- [ ] Verificar los pesos: hash SHA-256 contra Hugging Face, metadatos GGUF (arquitectura,
+- [x] Verificar los pesos (hash SHA-256 de QAD-Q4_0 coincide; falta comparar metadatos GGUF): hash SHA-256 contra Hugging Face, metadatos GGUF (arquitectura,
       plantilla, tokens especiales) y cuantización equivalente (Q4_K_M / Q6_K).
-- [ ] Velocidad en el móvil (tok/s de generación y prompt, RAM, tiempo de carga) con `spike`.
-- [ ] Calidad: `codebench` (sin/con razonamiento, con/sin modo código) y un conjunto pequeño
+- [x] Velocidad en el móvil (9,3 tok/s, ~2,4 GB RAM; sin mejora sobre el fine-tune) (tok/s de generación y prompt, RAM, tiempo de carga) con `spike`.
+- [x] Calidad (4/16→5/16 con modo código; fine-tune 5/16→7/16): `codebench` (sin/con razonamiento, con/sin modo código) y un conjunto pequeño
       de chats y llamadas a herramientas.
 - [ ] Comprobar si el oficial respeta `enable_thinking=false` (el fine-tune razona igualmente).
 - [ ] Decidir: modelo por defecto o ambos seleccionables.

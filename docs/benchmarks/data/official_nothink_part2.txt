@@ -1,0 +1,22 @@
+fib_iter       round 0: test_fail      tests 0/0 codes [] (234 tok, 11s)
+fib_iter       round 1: test_fail      tests 0/0 codes [] (225 tok, 11s)
+fib_iter       round 2: test_fail      tests 0/0 codes [] (225 tok, 10s)
+dijkstra       round 0: compile_error  tests 0/0 codes ["E0308", "E0425", "E0614"] (473 tok, 19s)
+dijkstra       round 1: compile_error  tests 0/0 codes ["E0277", "E0308", "E0425", "E0614"] (1536 tok, 64s)
+dijkstra       round 2: compile_error  tests 0/0 codes [] (1536 tok, 69s)
+config         round 0: compile_error  tests 0/0 codes ["E0277", "E0308"] (1536 tok, 58s)
+config         round 1: compile_error  tests 0/0 codes ["E0277"] (338 tok, 26s)
+config         round 2: compile_error  tests 0/0 codes ["E0277"] (339 tok, 16s)
+borrow_fix     round 0: test_fail      tests 1/2 codes [] (1536 tok, 58s)
+borrow_fix     round 1: compile_error  tests 0/0 codes ["E0502"] (1536 tok, 63s)
+borrow_fix     round 2: compile_error  tests 0/0 codes ["E0502"] (1536 tok, 88s)
+group_by       round 0: compile_error  tests 0/0 codes ["E0308"] (334 tok, 14s)
+group_by       round 1: pass           tests 3/3 codes [] (282 tok, 14s)
+
+== 5 tasks, think=false, repair=2
+fib_iter       test_fail -> test_fail -> test_fail
+dijkstra       compile_error -> compile_error -> compile_error
+config         compile_error -> compile_error -> compile_error
+borrow_fix     test_fail -> compile_error -> compile_error
+group_by       compile_error -> pass
+pass@1: 0/5   after repair: 1/5

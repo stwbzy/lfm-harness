@@ -47,6 +47,32 @@ Notas sobre cada pasada:
   traduce en más aciertos: el modelo sigue sin corregir errores como E0599 (`stack`,
   `matmul`, `group_by`) aunque cambie de respuesta. Datos: `bench_harness_repairtemp.*`.
 
+## Modelo oficial (LFM3-1.7B QAD-Q4_0, 2026-11-08)
+
+Mismas 16 tareas, mismas condiciones (PC, CPU, repair 2). Archivo oficial
+`LFM3-1.7B-QAD-Q4_0.gguf` (1,05 GB, SHA-256 `43a7d09a…7452`, coincide con Hugging Face).
+
+| Modelo | Configuración | pass@1 | tras reparar | Tokens (media/tarea) |
+|---|---|---|---|---|
+| Fine-tune Q4_K_M | A: sin modo código | 2/16 | 5/16 | 2201 |
+| Oficial QAD-Q4_0 | sin modo código | 1/16 | 2/16 | 1687 |
+| Fine-tune Q4_K_M | D: modo código + razonamiento 384 | 5/16 | 7/16 | 2503 |
+| Oficial QAD-Q4_0 | modo código + razonamiento 384 | 4/16 | 5/16 | 2184 |
+
+- Datos: `data/official_nothink.*` y `data/official_harness_think.*`.
+- El modelo oficial no mejora al fine-tune en código; queda 1–3 tareas por debajo, dentro del
+  ruido de una muestra por tarea pero sin ventaja visible. El modo código con razonamiento
+  sigue siendo mucho mejor que sin él (4/16 frente a 1/16), igual que con el fine-tune.
+- Aprueba a la primera `fizzbuzz`, `palindrome`, `stack` y `matmul` (modo código); `group_by`
+  tras reparar.
+- En el CUBOT P90: 9,3–9,4 tok/s de generación (el fine-tune daba ~10), RAM ~2,4 GB (PSS).
+  Q4_0 no es más rápido que Q4_K_M en este SoC con el build actual.
+- Incidente: la segunda pasada se cortó dos veces porque un programa generado para `fib_iter`
+  consumía hasta 11 GB al ejecutar los tests y `systemd-oomd` mataba el proceso. `codebench`
+  ahora limita cada ejecución a 2 GiB (`prlimit --as`). Las 11 primeras tareas de esa pasada
+  se ejecutaron antes del límite y las 5 restantes (`fib_iter` … `group_by`) después, en una
+  segunda ejecución con `--only`; `official_nothink.jsonl` es la unión de ambas.
+
 ## Qué falla
 
 Clasificación de los fallos en la pasada C (sin razonamiento), donde hay más casos:

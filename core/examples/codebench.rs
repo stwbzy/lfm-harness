@@ -157,7 +157,8 @@ fn check(code: &str, task: &Task, workdir: &Path) -> Attempt {
         a.short_feedback = codecheck::first_rustc_error(&err);
         return a;
     }
-    let mut child = Command::new(&bin).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    // 2 GiB address-space cap: a runaway generated program must fail, not exhaust the host.
+    let mut child = Command::new("prlimit").arg("--as=2147483648").arg(&bin).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     let start = Instant::now();
     loop {
         if child.try_wait().unwrap().is_some() {
