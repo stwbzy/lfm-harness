@@ -29,6 +29,7 @@ El modelo de uso diario es el fine-tune `LFM3-1.7B-Uncensored-AD`. Antes de camb
 - [ ] Decidir: modelo por defecto o ambos seleccionables.
 
 ### 7. Precisión del modo código (según `docs/benchmarks/`)
+- [x] Razonamiento de 384 tokens siempre activo en modo código (configuración D: 5/16 → 7/16).
 - [x] Variar la temperatura en las reparaciones (probado en C′: menos repeticiones, sin más aciertos). Antes, con 0.15 el modelo repetía respuestas
       idénticas aunque reciba el error (visto en `rpn`).
 - [ ] Comprobar en el móvil la firma pedida (nombre, nº de parámetros) con `syn` y avisar si

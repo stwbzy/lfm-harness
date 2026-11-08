@@ -208,7 +208,7 @@ pub fn run_turn(
 
 /// Sampling for code: deterministic-ish, no repetition penalty (code repeats
 /// `}`, `;`, identifiers legitimately), answer forced into a fenced block that
-/// ends generation when closed, a short reasoning budget and no tool calls.
+/// ends generation when closed, a short fixed reasoning budget (always on in code mode) and no tool calls.
 pub fn code_profile(base: &GenParams, intent: &CodeIntent) -> GenParams {
     GenParams {
         temperature: 0.15,
@@ -219,14 +219,17 @@ pub fn code_profile(base: &GenParams, intent: &CodeIntent) -> GenParams {
         max_tokens: base.max_tokens.max(1536),
         answer_prefill: intent.prefill(),
         stop_after: vec!["```".into()],
-        max_think_tokens: if base.enable_thinking { 384 } else { 0 },
+        // Benchmark pass D (docs/benchmarks): 384 tokens of reasoning took pass@1
+        // from 1/16 to 5/16; unlimited reasoning ran out of budget before any code.
+        enable_thinking: true,
+        max_think_tokens: 384,
         allow_tool_calls: false,
         ..base.clone()
     }
 }
 
 /// Sampling for a repair attempt. At code-mode temperature the model tends to
-/// return the very same answer even after seeing the error (9 of 26 repairs in
+/// return the very same answer even after seeing the error (9 of 28 repairs in
 /// the benchmark), so repairs sample hotter and with a different seed.
 pub fn repair_profile(params: &GenParams, attempt: u32) -> GenParams {
     GenParams {
