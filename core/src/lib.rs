@@ -4,6 +4,7 @@ pub mod chat;
 pub mod engine;
 pub mod harness;
 mod jni;
+pub mod markdown;
 pub mod store;
 pub mod tools;
 

@@ -365,3 +365,23 @@ mod tests {
         assert!(store_call(&s, "delete", &json!({})).is_err());
     }
 }
+
+// ---------------------------------------------------------------------------
+// Markdown: `dev.stwby.lfmharness.markdown.NativeMarkdown`
+
+/// Parses Markdown into the block JSON described in `markdown.rs`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_stwby_lfmharness_markdown_NativeMarkdown_parse<'l>(
+    mut env: JNIEnv<'l>,
+    _cls: JClass<'l>,
+    text: JString<'l>,
+) -> jstring {
+    let result = (|| -> Result<jstring> {
+        let text: String = env.get_string(&text)?.into();
+        Ok(env.new_string(crate::markdown::to_json(&text))?.into_raw())
+    })();
+    result.unwrap_or_else(|e| {
+        throw(&mut env, &e);
+        std::ptr::null_mut()
+    })
+}

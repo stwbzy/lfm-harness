@@ -47,6 +47,7 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.ui.text.font.FontFamily
 import dev.stwby.lfmharness.data.Conversation
 import dev.stwby.lfmharness.data.Note
+import dev.stwby.lfmharness.markdown.MarkdownText
 import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Date
@@ -456,7 +457,8 @@ private fun MessageBubble(m: UiMessage) {
         ) {
             if (m.reasoning.isNotBlank()) Reasoning(m.reasoning, expandedByDefault = m.streaming && m.content.isEmpty())
             when {
-                m.content.isNotEmpty() -> SelectionContainer { Text(m.content) }
+                m.content.isNotEmpty() && isUser -> SelectionContainer { Text(m.content) }
+                m.content.isNotEmpty() -> MarkdownText(m.content)
                 m.streaming && m.reasoning.isEmpty() -> CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
             }
             m.stats?.let {
