@@ -18,7 +18,7 @@ jni = "0.21"
 llama-cpp-2 = { git = "https://github.com/utilityai/llama-cpp-rs", rev = "0364f5da1c6a6ee37f507031f116ce4a09b28594", default-features = false, features = ["android-static-stdcxx"] }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
 
 [profile.release]
 lto = "thin"

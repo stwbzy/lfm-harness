@@ -5,6 +5,7 @@
 //! through a callback object; `cancel` may be called from any thread.
 //! Messages, parameters and stats cross the boundary as JSON.
 
+use std::cell::RefCell;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -12,10 +13,12 @@ use anyhow::{Context, Result, anyhow};
 use jni::JNIEnv;
 use jni::objects::{JClass, JObject, JString, JValue};
 use jni::sys::{jint, jlong, jstring};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
+use crate::harness::{TurnEvent, TurnRequest, run_turn};
 use crate::store::{NewMessage, Store, title_from};
-use crate::{Engine, EngineConfig, Event, GenParams, Message, Role};
+use crate::tools::Limits;
+use crate::{Engine, EngineConfig, GenParams, Message, Role};
 
 struct Session {
     engine: Mutex<Engine>,
@@ -26,16 +29,6 @@ struct Session {
 struct JsonMessage {
     role: String,
     content: String,
-}
-
-#[derive(Serialize)]
-struct JsonStats {
-    prompt_tokens: usize,
-    reused_tokens: usize,
-    prompt_tps: f64,
-    gen_tokens: usize,
-    gen_tps: f64,
-    cancelled: bool,
 }
 
 fn throw(env: &mut JNIEnv, err: &anyhow::Error) {
@@ -114,61 +107,137 @@ pub extern "system" fn Java_dev_stwby_lfmharness_engine_NativeEngine_reset<'l>(
     }
 }
 
-/// `callback` must implement `onText(String)` and `onThinkEnd()`.
-/// Returns stats as JSON.
+#[derive(Deserialize)]
+struct TurnParams {
+    #[serde(flatten)]
+    generation: GenParams,
+    #[serde(default)]
+    tools: Vec<String>,
+    #[serde(default)]
+    now: String,
+}
+
+/// Runs one user turn (with tool loop). `store` is a `NativeStore` handle or 0.
+///
+/// `callback` implements `TurnCallback`: `onText(String)`, `onThinkEnd()`,
+/// `onToolCallStarted()`, `onToolCall(String name, String argsJson)`,
+/// `onToolResult(String name, boolean ok, String content)`, `onNewMessage()`
+/// and `boolean confirmTool(String name, String argsJson)` (may block).
+/// Returns the turn's messages and stats as JSON.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_stwby_lfmharness_engine_NativeEngine_generate<'l>(
     mut env: JNIEnv<'l>,
     _cls: JClass<'l>,
     handle: jlong,
+    store: jlong,
     messages_json: JString<'l>,
     params_json: JString<'l>,
     callback: JObject<'l>,
 ) -> jstring {
     let result = (|| -> Result<jstring> {
         let s = unsafe { session(handle)? };
+        let store = unsafe { (store as *const Mutex<Store>).as_ref() };
         let messages: String = env.get_string(&messages_json)?.into();
         let params: String = env.get_string(&params_json)?.into();
         let messages = parse_messages(&messages)?;
-        let params: GenParams = serde_json::from_str(&params).context("invalid params")?;
+        let params: TurnParams = serde_json::from_str(&params).context("invalid params")?;
+        let limits = Limits::default();
+        let req = TurnRequest {
+            messages: &messages,
+            params: &params.generation,
+            enabled_tools: &params.tools,
+            now: &params.now,
+            limits: &limits,
+        };
 
         s.cancel.store(false, Ordering::Relaxed);
         let mut engine = s.engine.lock().map_err(|_| anyhow!("engine poisoned"))?;
-        let mut cb_error: Option<anyhow::Error> = None;
-        let stats = engine.generate(&messages, &params, &s.cancel, |ev| {
-            if cb_error.is_some() {
-                return;
-            }
-            let r = env.with_local_frame(4, |env| -> Result<()> {
-                match ev {
-                    Event::Text(t) => {
-                        let jt = env.new_string(t)?;
-                        env.call_method(&callback, "onText", "(Ljava/lang/String;)V", &[JValue::Object(&jt)])?;
-                    }
-                    Event::ThinkEnd => {
-                        env.call_method(&callback, "onThinkEnd", "()V", &[])?;
-                    }
+        // Both callbacks need the env; they never run at the same time.
+        let env_cell = RefCell::new(&mut env);
+        let cb_error: RefCell<Option<anyhow::Error>> = RefCell::new(None);
+        let fail = |e: anyhow::Error| {
+            // A Java exception in a callback aborts generation.
+            s.cancel.store(true, Ordering::Relaxed);
+            cb_error.borrow_mut().get_or_insert(e);
+        };
+
+        let output = run_turn(
+            &mut engine,
+            store,
+            &req,
+            &s.cancel,
+            |ev| {
+                if cb_error.borrow().is_some() {
+                    return;
                 }
-                Ok(())
-            });
-            if let Err(e) = r {
-                // A Java exception in the callback aborts generation.
-                s.cancel.store(true, Ordering::Relaxed);
-                cb_error = Some(e);
-            }
-        })?;
-        if let Some(e) = cb_error {
+                let mut env = env_cell.borrow_mut();
+                let r = env.with_local_frame(8, |env| -> Result<()> {
+                    match ev {
+                        TurnEvent::Text(t) => {
+                            let jt = env.new_string(t)?;
+                            env.call_method(&callback, "onText", "(Ljava/lang/String;)V", &[JValue::Object(&jt)])?;
+                        }
+                        TurnEvent::ThinkEnd => {
+                            env.call_method(&callback, "onThinkEnd", "()V", &[])?;
+                        }
+                        TurnEvent::ToolCallStarted => {
+                            env.call_method(&callback, "onToolCallStarted", "()V", &[])?;
+                        }
+                        TurnEvent::NewMessage => {
+                            env.call_method(&callback, "onNewMessage", "()V", &[])?;
+                        }
+                        TurnEvent::ToolCall { name, args } => {
+                            let (n, a) = (env.new_string(name)?, env.new_string(args)?);
+                            env.call_method(
+                                &callback,
+                                "onToolCall",
+                                "(Ljava/lang/String;Ljava/lang/String;)V",
+                                &[JValue::Object(&n), JValue::Object(&a)],
+                            )?;
+                        }
+                        TurnEvent::ToolResult { name, ok, content } => {
+                            let (n, c) = (env.new_string(name)?, env.new_string(content)?);
+                            env.call_method(
+                                &callback,
+                                "onToolResult",
+                                "(Ljava/lang/String;ZLjava/lang/String;)V",
+                                &[JValue::Object(&n), JValue::Bool(ok.into()), JValue::Object(&c)],
+                            )?;
+                        }
+                    }
+                    Ok(())
+                });
+                if let Err(e) = r {
+                    fail(e);
+                }
+            },
+            |name, args| {
+                if cb_error.borrow().is_some() {
+                    return false;
+                }
+                let mut env = env_cell.borrow_mut();
+                let r = env.with_local_frame(4, |env| -> Result<bool> {
+                    let (n, a) = (env.new_string(name)?, env.new_string(args)?);
+                    Ok(env
+                        .call_method(
+                            &callback,
+                            "confirmTool",
+                            "(Ljava/lang/String;Ljava/lang/String;)Z",
+                            &[JValue::Object(&n), JValue::Object(&a)],
+                        )?
+                        .z()?)
+                });
+                r.unwrap_or_else(|e| {
+                    fail(e);
+                    false
+                })
+            },
+        );
+        drop(env_cell);
+        if let Some(e) = cb_error.into_inner() {
             return Err(e);
         }
-
-        let json = serde_json::to_string(&JsonStats {
-            prompt_tokens: stats.prompt_tokens,
-            reused_tokens: stats.reused_tokens,
-            prompt_tps: stats.prompt_tps(),
-            gen_tokens: stats.gen_tokens,
-            gen_tps: stats.gen_tps(),
-            cancelled: stats.cancelled,
-        })?;
+        let json = serde_json::to_string(&output?)?;
         Ok(env.new_string(json)?.into_raw())
     })();
     result.unwrap_or_else(|e| {
@@ -178,12 +247,7 @@ pub extern "system" fn Java_dev_stwby_lfmharness_engine_NativeEngine_generate<'l
 }
 
 fn parse_role(s: &str) -> Result<Role> {
-    Ok(match s {
-        "system" => Role::System,
-        "user" => Role::User,
-        "assistant" => Role::Assistant,
-        other => return Err(anyhow!("unknown role {other}")),
-    })
+    Role::parse(s).ok_or_else(|| anyhow!("unknown role {s}"))
 }
 
 fn parse_messages(json: &str) -> Result<Vec<Message>> {
@@ -267,12 +331,15 @@ fn store_call(store: &Store, op: &str, a: &serde_json::Value) -> Result<serde_js
         "add_message" => to_value(store.add_message(
             id("conversation_id")?,
             &NewMessage {
-                role: parse_role(text("role")?)?,
+                role: Some(parse_role(text("role")?)?),
                 content: text("content")?,
                 reasoning: a["reasoning"].as_str().unwrap_or(""),
                 stats: a["stats"].as_str(),
+                meta: a["meta"].as_str(),
             },
         )?)?,
+        "list_notes" => to_value(store.list_notes()?)?,
+        "delete_note" => Value::Bool(store.delete_note(text("title")?)?),
         other => return Err(anyhow!("unknown store op `{other}`")),
     })
 }

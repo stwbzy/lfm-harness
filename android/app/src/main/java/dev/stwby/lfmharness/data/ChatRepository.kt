@@ -25,11 +25,16 @@ data class StoredMessage(
     val content: String,
     val reasoning: String,
     val stats: String?,
+    /** Tool-round details (JSON) or null for normal messages. */
+    val meta: String?,
 )
 
-/** Conversation history persisted in `chats.db`. All calls run on the IO dispatcher. */
+data class Note(val title: String, val content: String, val updatedAt: Long)
+
+/** Conversation history and notes persisted in `chats.db`. All calls run on the IO dispatcher. */
 class ChatRepository(dbPath: String) {
-    private val handle = NativeStore.open(dbPath)
+    /** Also handed to the engine so tools can read chats and notes. */
+    internal val handle = NativeStore.open(dbPath)
 
     private suspend fun call(op: String, args: JSONObject = JSONObject()): String =
         withContext(Dispatchers.IO) { NativeStore.call(handle, op, args.toString()) }
@@ -62,6 +67,7 @@ class ChatRepository(dbPath: String) {
         content: String,
         reasoning: String = "",
         stats: String? = null,
+        meta: String? = null,
     ): StoredMessage {
         val args = JSONObject()
             .put("conversation_id", conversationId)
@@ -69,7 +75,19 @@ class ChatRepository(dbPath: String) {
             .put("content", content)
             .put("reasoning", reasoning)
         if (stats != null) args.put("stats", stats)
+        if (meta != null) args.put("meta", meta)
         return JSONObject(call("add_message", args)).toMessage()
+    }
+
+    suspend fun notes(): List<Note> {
+        val arr = JSONArray(call("list_notes"))
+        return List(arr.length()) { i ->
+            arr.getJSONObject(i).run { Note(getString("title"), getString("content"), getLong("updated_at")) }
+        }
+    }
+
+    suspend fun deleteNote(title: String) {
+        call("delete_note", JSONObject().put("title", title))
     }
 
     private fun JSONObject.toConversation() =
@@ -77,9 +95,10 @@ class ChatRepository(dbPath: String) {
 
     private fun JSONObject.toMessage() = StoredMessage(
         id = getLong("id"),
-        role = Role.entries.first { it.wire == getString("role") },
+        role = Role.of(getString("role")),
         content = getString("content"),
         reasoning = optString("reasoning", ""),
         stats = if (isNull("stats")) null else getString("stats"),
+        meta = if (!has("meta") || isNull("meta")) null else getString("meta"),
     )
 }

@@ -8,28 +8,55 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.stwby.lfmharness.HarnessApp
 import dev.stwby.lfmharness.data.Conversation
-import dev.stwby.lfmharness.engine.GenEvent
+import dev.stwby.lfmharness.data.Note
+import dev.stwby.lfmharness.data.StoredMessage
 import dev.stwby.lfmharness.engine.GenParams
 import dev.stwby.lfmharness.engine.LlmEngine
 import dev.stwby.lfmharness.engine.Role
 import dev.stwby.lfmharness.engine.Turn
+import dev.stwby.lfmharness.engine.TurnCallback
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.io.File
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
+import java.util.Locale
+
+enum class Kind { Normal, ToolCall, ToolResult }
 
 data class UiMessage(
     val id: Long,
     val role: Role,
+    /** Text shown to the user. */
     val content: String = "",
     val reasoning: String = "",
     val streaming: Boolean = false,
     val stats: String? = null,
+    val kind: Kind = Kind.Normal,
+    /** Text sent back to the model on later turns (raw markup for tool rounds). */
+    val history: String? = null,
+    val toolName: String? = null,
+    val toolArgs: String? = null,
+    val toolOk: Boolean = true,
+)
+
+/** Built-in tools (names must match `core/src/tools.rs`) with UI labels. */
+val TOOL_LABELS = linkedMapOf(
+    "calculator" to "Calculadora",
+    "get_datetime" to "Fecha y hora",
+    "search_chats" to "Buscar en chats",
+    "list_notes" to "Listar notas",
+    "read_note" to "Leer notas",
+    "save_note" to "Guardar notas (pide permiso)",
+    "delete_note" to "Borrar notas (pide permiso)",
 )
 
 data class Settings(
@@ -38,6 +65,8 @@ data class Settings(
     val maxTokens: Int = 1024,
     val nCtx: Int = 4096,
     val enableThinking: Boolean = false,
+    val toolsEnabled: Boolean = true,
+    val enabledTools: Set<String> = TOOL_LABELS.keys,
 )
 
 sealed interface ModelState {
@@ -47,6 +76,9 @@ sealed interface ModelState {
     data class Ready(val name: String) : ModelState
 }
 
+/** A tool call waiting for the user's approval. */
+data class PendingConfirm(val name: String, val args: Map<String, String>, val answer: CompletableDeferred<Boolean>)
+
 data class UiState(
     val messages: List<UiMessage> = emptyList(),
     val conversations: List<Conversation> = emptyList(),
@@ -55,6 +87,8 @@ data class UiState(
     val model: ModelState = ModelState.None,
     val generating: Boolean = false,
     val settings: Settings = Settings(),
+    val confirm: PendingConfirm? = null,
+    val notes: List<Note>? = null,
     val error: String? = null,
 )
 
@@ -66,7 +100,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     val state: StateFlow<UiState> = _state.asStateFlow()
     /** Negative ids for messages not yet loaded from the database. */
     private var tempId = -1L
-    private var genJob: Job? = null
 
     init {
         val path = prefs.getString("model_path", null)
@@ -85,54 +118,65 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // -- conversations ------------------------------------------------------
+
     private suspend fun refreshConversations() {
         val list = repo.conversations()
         _state.update { it.copy(conversations = list) }
     }
 
     private suspend fun openConversation(id: Long) {
-        val msgs = repo.messages(id).map {
-            UiMessage(it.id, it.role, it.content, it.reasoning, stats = it.stats)
-        }
+        val msgs = repo.messages(id).map(::toUi)
         _state.update { it.copy(currentId = id, messages = msgs, error = null) }
         prefs.edit().putLong("last_conversation", id).apply()
     }
 
     fun selectConversation(id: Long) {
         if (_state.value.generating || id == _state.value.currentId) return
-        viewModelScope.launch {
-            try {
-                openConversation(id)
-            } catch (e: Exception) {
-                _state.update { it.copy(error = e.message) }
-            }
-        }
+        launchCatching { openConversation(id) }
     }
 
     fun deleteConversation(id: Long) {
         if (_state.value.generating) return
-        viewModelScope.launch {
-            try {
-                repo.delete(id)
-                if (_state.value.currentId == id) newChat()
-                refreshConversations()
-            } catch (e: Exception) {
-                _state.update { it.copy(error = e.message) }
-            }
+        launchCatching {
+            repo.delete(id)
+            if (_state.value.currentId == id) newChat()
+            refreshConversations()
         }
     }
 
     fun renameConversation(id: Long, title: String) {
         if (title.isBlank()) return
-        viewModelScope.launch {
-            try {
-                repo.rename(id, title.trim())
-                refreshConversations()
-            } catch (e: Exception) {
-                _state.update { it.copy(error = e.message) }
-            }
+        launchCatching {
+            repo.rename(id, title.trim())
+            refreshConversations()
         }
     }
+
+    /** Clears the screen; the conversation row is created on the first message. */
+    fun newChat() {
+        if (_state.value.generating) return
+        _state.update { it.copy(messages = emptyList(), currentId = null, error = null) }
+        prefs.edit().remove("last_conversation").apply()
+    }
+
+    // -- notes ------------------------------------------------------------
+
+    fun showNotes() = launchCatching { _state.update { it.copy(notes = emptyList()) }; reloadNotes() }
+
+    fun hideNotes() = _state.update { it.copy(notes = null) }
+
+    fun deleteNote(title: String) = launchCatching {
+        repo.deleteNote(title)
+        reloadNotes()
+    }
+
+    private suspend fun reloadNotes() {
+        val notes = repo.notes()
+        _state.update { it.copy(notes = notes) }
+    }
+
+    // -- model --------------------------------------------------------------
 
     fun importModel(uri: Uri) {
         if (_state.value.generating) return
@@ -147,7 +191,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private suspend fun copyToModels(uri: Uri): File {
+    private fun copyToModels(uri: Uri): File {
         val resolver = getApplication<Application>().contentResolver
         var name = "model.gguf"
         var size = -1L
@@ -199,25 +243,28 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // -- generation ---------------------------------------------------------
+
     fun send(text: String) {
         val s = _state.value
         if (text.isBlank() || s.generating || s.model !is ModelState.Ready) return
         val user = UiMessage(tempId--, Role.User, text.trim())
-        val reply = UiMessage(tempId--, Role.Assistant, streaming = true)
         val history = s.messages + user
-        _state.update { it.copy(messages = history + reply, generating = true, error = null) }
+        val firstReply = UiMessage(tempId--, Role.Assistant, streaming = true)
+        _state.update { it.copy(messages = history + firstReply, generating = true, error = null) }
 
         val turns = buildList {
             if (s.settings.systemPrompt.isNotBlank()) add(Turn(Role.System, s.settings.systemPrompt))
-            history.forEach { add(Turn(it.role, it.content)) }
+            history.forEach { add(Turn(it.role, it.history ?: it.content)) }
         }
         val params = GenParams(
             maxTokens = s.settings.maxTokens,
             temperature = s.settings.temperature,
             enableThinking = s.settings.enableThinking,
+            tools = if (s.settings.toolsEnabled) TOOL_LABELS.keys.filter { it in s.settings.enabledTools } else emptyList(),
+            now = nowText(),
         )
-        genJob = viewModelScope.launch {
-            var inReasoning = params.enableThinking
+        viewModelScope.launch {
             var convId: Long? = s.currentId
             try {
                 // Persist the user turn first so it survives a crash mid-generation.
@@ -229,64 +276,152 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 repo.addMessage(convId, Role.User, user.content)
                 refreshConversations()
 
-                val stats = LlmEngine.generate(turns, params) { ev ->
-                    // `update` may retry its lambda, so keep side effects outside it.
-                    when (ev) {
-                        is GenEvent.Text -> {
-                            val r = inReasoning
-                            updateMessage(reply.id) { m ->
-                                if (r) m.copy(reasoning = m.reasoning + ev.text)
-                                else m.copy(content = m.content + ev.text)
-                            }
-                        }
-                        GenEvent.ThinkEnd -> {
-                            val was = inReasoning
-                            inReasoning = false
-                            // With thinking off, text before </think> was reasoning too.
-                            updateMessage(reply.id) { m ->
-                                m.copy(reasoning = if (was) m.reasoning else m.reasoning + m.content, content = "")
-                            }
-                        }
-                    }
-                }
-                val info = "%.1f tok/s · %d tok · prompt %d (%d en caché)%s".format(
-                    stats.genTps, stats.genTokens, stats.promptTokens, stats.reusedTokens,
-                    if (stats.cancelled) " · detenido" else "",
+                val result = LlmEngine.generate(turns, params, repo.handle, StreamCallback(firstReply.id, params.enableThinking))
+                val st = result.stats
+                val info = "%.1f tok/s · %d tok · prompt %d (%d en caché)%s%s%s".format(
+                    st.genTps, st.genTokens, st.promptTokens, st.reusedTokens,
+                    if (st.toolCalls > 0) " · ${st.toolCalls} herramienta(s)" else "",
+                    if (st.failedCalls > 0) " · ⚠ ${st.failedCalls} acción(es) no realizada(s)" else "",
+                    if (st.cancelled) " · detenido" else "",
                 )
-                updateMessage(reply.id) {
-                    it.copy(content = it.content.trim(), reasoning = it.reasoning.trim(), streaming = false, stats = info)
+                // Store the authoritative messages, then show them as stored.
+                val lastFinal = result.messages.indexOfLast { it.meta == null }
+                result.messages.forEachIndexed { i, m ->
+                    repo.addMessage(convId, m.role, m.content, m.reasoning, if (i == lastFinal) info else null, m.meta)
                 }
-                val done = _state.value.messages.first { it.id == reply.id }
-                if (done.content.isNotEmpty() || done.reasoning.isNotEmpty()) {
-                    repo.addMessage(convId, Role.Assistant, done.content, done.reasoning, done.stats)
-                } else {
-                    removeMessage(reply.id)
-                }
+                openConversation(convId)
                 refreshConversations()
             } catch (e: Exception) {
                 // Keep whatever was streamed on screen; it is not saved.
-                updateMessage(reply.id) { it.copy(streaming = false) }
-                if (_state.value.messages.first { it.id == reply.id }.let { it.content.isEmpty() && it.reasoning.isEmpty() }) {
-                    removeMessage(reply.id)
+                _state.update { st ->
+                    st.copy(
+                        messages = st.messages
+                            .map { it.copy(streaming = false) }
+                            .filterNot { it.role == Role.Assistant && it.kind == Kind.Normal && it.content.isEmpty() && it.reasoning.isEmpty() },
+                        error = e.message,
+                    )
                 }
-                _state.update { it.copy(error = e.message) }
             } finally {
-                _state.update { it.copy(generating = false) }
+                _state.value.confirm?.answer?.complete(false)
+                _state.update { it.copy(generating = false, confirm = null) }
             }
         }
     }
 
-    fun stop() = LlmEngine.cancel()
-
-    /** Clears the screen; the conversation row is created on the first message. */
-    fun newChat() {
-        if (_state.value.generating) return
-        _state.update { it.copy(messages = emptyList(), currentId = null, error = null) }
-        prefs.edit().remove("last_conversation").apply()
+    fun stop() {
+        _state.value.confirm?.answer?.complete(false)
+        LlmEngine.cancel()
     }
 
-    private fun removeMessage(id: Long) = _state.update { s ->
-        s.copy(messages = s.messages.filterNot { it.id == id })
+    fun answerConfirm(allow: Boolean) {
+        val c = _state.value.confirm ?: return
+        _state.update { it.copy(confirm = null) }
+        c.answer.complete(allow)
+    }
+
+    /** Streams one turn into the message list. Runs on the generation thread. */
+    private inner class StreamCallback(firstId: Long, private val thinking: Boolean) : TurnCallback {
+        private var currentId = firstId
+        private var inReasoning = thinking
+
+        override fun onText(text: String) {
+            val r = inReasoning
+            updateMessage(currentId) { m ->
+                if (r) m.copy(reasoning = m.reasoning + text) else m.copy(content = m.content + text)
+            }
+        }
+
+        override fun onThinkEnd() {
+            val was = inReasoning
+            inReasoning = false
+            // With thinking off, text before </think> was reasoning too.
+            updateMessage(currentId) { m ->
+                m.copy(reasoning = if (was) m.reasoning else m.reasoning + m.content, content = "")
+            }
+        }
+
+        override fun onToolCallStarted() {
+            updateMessage(currentId) { it.copy(kind = Kind.ToolCall, toolName = "…") }
+        }
+
+        override fun onToolCall(name: String, argsJson: String) {
+            updateMessage(currentId) { it.copy(kind = Kind.ToolCall, toolName = name, toolArgs = argsText(argsJson), streaming = false) }
+        }
+
+        override fun onToolResult(name: String, ok: Boolean, content: String) {
+            val msg = UiMessage(tempId--, Role.Tool, content, kind = Kind.ToolResult, toolName = name, toolOk = ok)
+            _state.update { it.copy(messages = it.messages + msg) }
+        }
+
+        override fun onNewMessage() {
+            inReasoning = thinking
+            val msg = UiMessage(tempId--, Role.Assistant, streaming = true)
+            currentId = msg.id
+            _state.update { it.copy(messages = it.messages + msg) }
+        }
+
+        override fun confirmTool(name: String, argsJson: String): Boolean {
+            val answer = CompletableDeferred<Boolean>()
+            _state.update { it.copy(confirm = PendingConfirm(name, argsMap(argsJson), answer)) }
+            // Blocks the generation thread (never the UI thread) until answered.
+            return runBlocking { answer.await() }
+        }
+    }
+
+    // -- helpers ------------------------------------------------------------
+
+    private fun toUi(m: StoredMessage): UiMessage {
+        val meta = m.meta?.let { runCatching { JSONObject(it) }.getOrNull() }
+        return when {
+            m.role == Role.Tool -> UiMessage(
+                m.id, m.role, m.content, kind = Kind.ToolResult,
+                toolName = meta?.optString("tool"), toolOk = meta?.optBoolean("ok", true) ?: true,
+            )
+            meta?.has("tool_call") == true -> {
+                val call = meta.getJSONObject("tool_call")
+                UiMessage(
+                    m.id, m.role, visibleBeforeToolCall(m.content), kind = Kind.ToolCall, history = m.content,
+                    toolName = call.optString("name").ifEmpty { "?" },
+                    toolArgs = call.optJSONObject("args")?.toString()?.let(::argsText),
+                )
+            }
+            else -> UiMessage(m.id, m.role, m.content, m.reasoning, stats = m.stats)
+        }
+    }
+
+    /** User-visible text of a raw tool-call turn: after any `</think>`, before `<tool_call>`. */
+    private fun visibleBeforeToolCall(raw: String): String {
+        val afterThink = raw.substringAfterLast("</think>", raw.removePrefix("<think>"))
+        return afterThink.substringBefore("<tool_call>").trim()
+    }
+
+    private fun argsMap(json: String): Map<String, String> = runCatching {
+        val o = JSONObject(json)
+        o.keys().asSequence().associateWith { o.optString(it) }
+    }.getOrDefault(emptyMap())
+
+    private fun argsText(json: String) = argsMap(json).entries.joinToString(", ") { (k, v) ->
+        val short = if (v.length > 60) v.take(60) + "…" else v
+        "$k: ${short.replace('\n', ' ')}"
+    }
+
+    private fun nowText(): String {
+        val now = ZonedDateTime.now()
+        val es = Locale.forLanguageTag("es")
+        val date = now.format(DateTimeFormatter.ofPattern("EEEE, d 'de' MMMM 'de' yyyy, HH:mm", es))
+        return "$date (${now.zone.id}, UTC${now.offset.id.replace("Z", "+00:00")})"
+    }
+
+    private fun updateMessage(id: Long, f: (UiMessage) -> UiMessage) = _state.update { s ->
+        s.copy(messages = s.messages.map { if (it.id == id) f(it) else it })
+    }
+
+    private fun launchCatching(block: suspend () -> Unit) = viewModelScope.launch {
+        try {
+            block()
+        } catch (e: Exception) {
+            _state.update { it.copy(error = e.message) }
+        }
     }
 
     fun dismissError() = _state.update { it.copy(error = null) }
@@ -301,10 +436,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun updateMessage(id: Long, f: (UiMessage) -> UiMessage) = _state.update { s ->
-        s.copy(messages = s.messages.map { if (it.id == id) f(it) else it })
-    }
-
     private fun loadSettings() = Settings().let { d ->
         Settings(
             systemPrompt = prefs.getString("system_prompt", d.systemPrompt)!!,
@@ -312,6 +443,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             maxTokens = prefs.getInt("max_tokens", d.maxTokens),
             nCtx = prefs.getInt("n_ctx", d.nCtx),
             enableThinking = prefs.getBoolean("thinking", d.enableThinking),
+            toolsEnabled = prefs.getBoolean("tools_enabled", d.toolsEnabled),
+            enabledTools = prefs.getStringSet("enabled_tools", null)?.toSet() ?: d.enabledTools,
         )
     }
 
@@ -321,5 +454,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         .putInt("max_tokens", s.maxTokens)
         .putInt("n_ctx", s.nCtx)
         .putBoolean("thinking", s.enableThinking)
+        .putBoolean("tools_enabled", s.toolsEnabled)
+        .putStringSet("enabled_tools", s.enabledTools)
         .apply()
 }

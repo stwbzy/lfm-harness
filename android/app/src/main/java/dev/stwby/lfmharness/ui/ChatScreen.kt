@@ -40,7 +40,13 @@ import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material3.Checkbox
+import androidx.compose.ui.text.font.FontFamily
 import dev.stwby.lfmharness.data.Conversation
+import dev.stwby.lfmharness.data.Note
 import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Date
@@ -107,6 +113,7 @@ fun ChatScreen(vm: ChatViewModel) {
                 onSelect = { vm.selectConversation(it); scope.launch { drawer.close() } },
                 onRename = vm::renameConversation,
                 onDelete = vm::deleteConversation,
+                onNotes = { vm.showNotes(); scope.launch { drawer.close() } },
             )
         },
     ) {
@@ -175,6 +182,61 @@ fun ChatScreen(vm: ChatViewModel) {
             showSettings = false
         }
     }
+    state.confirm?.let { c ->
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("¿Permitir ${TOOL_LABELS[c.name]?.substringBefore(" (") ?: c.name}?") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    Text("El modelo quiere usar la herramienta «${c.name}» con:")
+                    Spacer(Modifier.size(8.dp))
+                    c.args.forEach { (k, v) ->
+                        Text(k, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                        Text(v, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                        Spacer(Modifier.size(6.dp))
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { vm.answerConfirm(true) }) { Text("Permitir") } },
+            dismissButton = { TextButton(onClick = { vm.answerConfirm(false) }) { Text("Rechazar") } },
+        )
+    }
+    state.notes?.let { notes ->
+        NotesDialog(notes, onDelete = vm::deleteNote, onDismiss = vm::hideNotes)
+    }
+}
+
+@Composable
+private fun NotesDialog(notes: List<Note>, onDelete: (String) -> Unit, onDismiss: () -> Unit) {
+    var open by remember { mutableStateOf<String?>(null) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Notas (${notes.size})") },
+        text = {
+            if (notes.isEmpty()) {
+                Text("No hay notas. Pídele al modelo que guarde una.")
+            } else {
+                LazyColumn {
+                    items(notes, key = { it.title }) { n ->
+                        Column(Modifier.fillMaxWidth().clickable { open = if (open == n.title) null else n.title }.padding(vertical = 8.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(n.title, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                                IconButton(onClick = { onDelete(n.title) }) { Icon(Icons.Default.Delete, "Borrar nota") }
+                            }
+                            Text(
+                                n.content,
+                                maxLines = if (open == n.title) Int.MAX_VALUE else 2,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        HorizontalDivider()
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Cerrar") } },
+    )
 }
 
 @Composable
@@ -186,6 +248,7 @@ private fun ConversationDrawer(
     onSelect: (Long) -> Unit,
     onRename: (Long, String) -> Unit,
     onDelete: (Long) -> Unit,
+    onNotes: () -> Unit,
 ) {
     var renaming by remember { mutableStateOf<Conversation?>(null) }
     var deleting by remember { mutableStateOf<Conversation?>(null) }
@@ -198,6 +261,13 @@ private fun ConversationDrawer(
             icon = { Icon(Icons.Default.Add, null) },
             selected = currentId == null,
             onClick = { if (enabled) onNew() },
+            modifier = Modifier.padding(horizontal = 12.dp),
+        )
+        NavigationDrawerItem(
+            label = { Text("Notas") },
+            icon = { Icon(Icons.Default.Description, null) },
+            selected = false,
+            onClick = onNotes,
             modifier = Modifier.padding(horizontal = 12.dp),
         )
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
@@ -303,7 +373,8 @@ private fun MessageList(messages: List<UiMessage>) {
     val listState = rememberLazyListState()
     val last = messages.lastOrNull()
     // Follow the streaming reply.
-    LaunchedEffect(messages.size, last?.content?.length, last?.reasoning?.length) {
+    // `last.id` changes when the stored messages replace the streamed ones.
+    LaunchedEffect(messages.size, last?.id, last?.content?.length, last?.reasoning?.length) {
         listState.scrollToItem(messages.lastIndex, Int.MAX_VALUE)
     }
     LazyColumn(
@@ -317,7 +388,60 @@ private fun MessageList(messages: List<UiMessage>) {
 }
 
 @Composable
+private fun ToolCard(m: UiMessage) {
+    val colors = MaterialTheme.colorScheme
+    val isResult = m.kind == Kind.ToolResult
+    val bg = when {
+        isResult && !m.toolOk -> colors.errorContainer
+        isResult -> colors.secondaryContainer
+        else -> colors.tertiaryContainer
+    }
+    var expanded by remember { mutableStateOf(false) }
+    Column(
+        Modifier
+            .widthIn(max = 340.dp)
+            .background(bg, RoundedCornerShape(10.dp))
+            .clickable(enabled = isResult) { expanded = !expanded }
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+    ) {
+        if (isResult) {
+            Text(
+                "${if (m.toolOk) "✓" else "✗"} ${m.toolName ?: "herramienta"}",
+                style = MaterialTheme.typography.labelMedium,
+            )
+            Text(
+                m.content,
+                fontFamily = FontFamily.Monospace,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = if (expanded) Int.MAX_VALUE else 3,
+                overflow = TextOverflow.Ellipsis,
+            )
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Build, null, Modifier.size(14.dp))
+                Spacer(Modifier.size(6.dp))
+                Text(
+                    if (m.toolName == "…") "Preparando herramienta…" else "${m.toolName}(${m.toolArgs.orEmpty()})",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun MessageBubble(m: UiMessage) {
+    if (m.kind != Kind.Normal) {
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            // Text the model wrote before deciding to call the tool.
+            if (m.kind == Kind.ToolCall && (m.content.isNotBlank() || m.reasoning.isNotBlank())) {
+                MessageBubble(m.copy(kind = Kind.Normal, streaming = false, stats = null))
+            }
+            ToolCard(m)
+        }
+        return
+    }
     val isUser = m.role == Role.User
     val colors = MaterialTheme.colorScheme
     Box(Modifier.fillMaxWidth(), contentAlignment = if (isUser) Alignment.CenterEnd else Alignment.CenterStart) {
@@ -418,6 +542,31 @@ private fun SettingsDialog(initial: Settings, onDismiss: () -> Unit, onSave: (Se
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Razonamiento (thinking)", Modifier.weight(1f))
                     Switch(s.enableThinking, { s = s.copy(enableThinking = it) })
+                }
+                HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Herramientas")
+                        Text(
+                            "Sin red ni archivos; máx. 3 llamadas por mensaje",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(s.toolsEnabled, { s = s.copy(toolsEnabled = it) })
+                }
+                if (s.toolsEnabled) {
+                    TOOL_LABELS.forEach { (name, label) ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(
+                                checked = name in s.enabledTools,
+                                onCheckedChange = { on ->
+                                    s = s.copy(enabledTools = if (on) s.enabledTools + name else s.enabledTools - name)
+                                },
+                            )
+                            Text(label, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
                 }
             }
         },

@@ -7,7 +7,13 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
-enum class Role(val wire: String) { System("system"), User("user"), Assistant("assistant") }
+enum class Role(val wire: String) {
+    System("system"), User("user"), Assistant("assistant"), Tool("tool");
+
+    companion object {
+        fun of(wire: String) = entries.first { it.wire == wire }
+    }
+}
 
 data class Turn(val role: Role, val content: String)
 
@@ -19,6 +25,10 @@ data class GenParams(
     val minP: Float = 0.15f,
     val repeatPenalty: Float = 1.05f,
     val enableThinking: Boolean = false,
+    /** Enabled tool names; empty = plain chat. */
+    val tools: List<String> = emptyList(),
+    /** Local date/time text for `get_datetime`. */
+    val now: String = "",
 ) {
     fun toJson(): String = JSONObject()
         .put("max_tokens", maxTokens)
@@ -28,30 +38,48 @@ data class GenParams(
         .put("min_p", minP.toDouble())
         .put("repeat_penalty", repeatPenalty.toDouble())
         .put("enable_thinking", enableThinking)
+        .put("tools", JSONArray(tools))
+        .put("now", now)
         .toString()
 }
 
-data class GenStats(
+/** A message produced by the turn, as it must be stored and re-sent. */
+data class TurnMessage(val role: Role, val content: String, val reasoning: String, val meta: String?)
+
+data class TurnStats(
     val promptTokens: Int,
     val reusedTokens: Int,
-    val promptTps: Double,
     val genTokens: Int,
     val genTps: Double,
+    val toolCalls: Int,
+    /** Rejected/invalid/failed calls: nothing was done, whatever the model says. */
+    val failedCalls: Int,
     val cancelled: Boolean,
-) {
+)
+
+data class TurnResult(val messages: List<TurnMessage>, val stats: TurnStats) {
     companion object {
-        fun parse(json: String): GenStats = JSONObject(json).run {
-            GenStats(
-                getInt("prompt_tokens"), getInt("reused_tokens"), getDouble("prompt_tps"),
-                getInt("gen_tokens"), getDouble("gen_tps"), getBoolean("cancelled"),
+        fun parse(json: String): TurnResult {
+            val o = JSONObject(json)
+            val arr = o.getJSONArray("messages")
+            val msgs = List(arr.length()) { i ->
+                arr.getJSONObject(i).run {
+                    TurnMessage(
+                        Role.of(getString("role")), getString("content"), optString("reasoning", ""),
+                        if (isNull("meta")) null else getString("meta"),
+                    )
+                }
+            }
+            val s = o.getJSONObject("stats")
+            return TurnResult(
+                msgs,
+                TurnStats(
+                    s.getInt("prompt_tokens"), s.getInt("reused_tokens"), s.getInt("gen_tokens"),
+                    s.getDouble("gen_tps"), s.getInt("tool_calls"), s.getInt("failed_calls"), s.getBoolean("cancelled"),
+                ),
             )
         }
     }
-}
-
-sealed interface GenEvent {
-    data class Text(val text: String) : GenEvent
-    data object ThinkEnd : GenEvent
 }
 
 /** Process-wide engine: one model loaded at a time, one generation at a time. */
@@ -76,26 +104,18 @@ object LlmEngine {
         if (h != 0L) NativeEngine.free(h)
     }
 
-    /** Forget the cached conversation (switching chats). */
-    suspend fun reset() = withContext(Dispatchers.IO) {
-        mutex.withLock { if (handle != 0L) NativeEngine.reset(handle) }
-    }
-
-    /** Runs a generation; [onEvent] is invoked on a background thread. */
+    /** Runs one user turn; [callback] is invoked on a background thread. */
     suspend fun generate(
         turns: List<Turn>,
         params: GenParams,
-        onEvent: (GenEvent) -> Unit,
-    ): GenStats = withContext(Dispatchers.IO) {
+        storeHandle: Long,
+        callback: TurnCallback,
+    ): TurnResult = withContext(Dispatchers.IO) {
         mutex.withLock {
             check(handle != 0L) { "No hay modelo cargado" }
             val messages = JSONArray()
             turns.forEach { messages.put(JSONObject().put("role", it.role.wire).put("content", it.content)) }
-            val cb = object : TokenCallback {
-                override fun onText(text: String) = onEvent(GenEvent.Text(text))
-                override fun onThinkEnd() = onEvent(GenEvent.ThinkEnd)
-            }
-            GenStats.parse(NativeEngine.generate(handle, messages.toString(), params.toJson(), cb))
+            TurnResult.parse(NativeEngine.generate(handle, storeHandle, messages.toString(), params.toJson(), callback))
         }
     }
 

@@ -85,6 +85,17 @@ pub enum Event<'a> {
     Text(&'a str),
     /// The model closed its reasoning block (`</think>`).
     ThinkEnd,
+    /// The model started writing a tool call (its markup is not streamed).
+    ToolCallStarted,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GenOutput {
+    pub stats: GenStats,
+    /// Everything generated, special tokens included (`</think>`, tool markup).
+    pub text: String,
+    /// The complete `<tool_call>…</tool_call>` block, if generation stopped on one.
+    pub tool_call: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -120,8 +131,14 @@ pub struct Engine {
     /// can rewind there instead of re-evaluating everything (hybrid models
     /// cannot drop the tail of their conv state otherwise).
     checkpoint: Option<(usize, SeqState)>,
+    /// Same, taken at the end of the system turn.
+    sys_checkpoint: Option<(usize, SeqState)>,
     bos: String,
+    im_end: Option<LlamaToken>,
+    newline: Option<LlamaToken>,
     think_end: Option<LlamaToken>,
+    tool_start: Option<LlamaToken>,
+    tool_end: Option<LlamaToken>,
     model: Box<LlamaModel>,
     config: EngineConfig,
 }
@@ -157,12 +174,30 @@ impl Engine {
         let vocab = model.vocab();
         let bos = String::from_utf8_lossy(&vocab.token_to_piece(vocab.bos(), true, None))
             .into_owned();
-        let think_end = match vocab.tokenize(b"</think>", false, true).as_slice() {
+        let special = |text: &str| match vocab.tokenize(text.as_bytes(), false, true).as_slice() {
             [t] => Some(*t),
             _ => None,
         };
+        let think_end = special("</think>");
+        let tool_start = special("<tool_call>");
+        let tool_end = special("</tool_call>");
 
-        Ok(Self { ctx, cached: Vec::new(), checkpoint: None, bos, think_end, model, config })
+        let im_end = special("<|im_end|>");
+        let newline = special("\n");
+        Ok(Self {
+            ctx,
+            cached: Vec::new(),
+            checkpoint: None,
+            sys_checkpoint: None,
+            bos,
+            im_end,
+            newline,
+            think_end,
+            tool_start,
+            tool_end,
+            model,
+            config,
+        })
     }
 
     pub fn n_ctx(&self) -> u32 {
@@ -182,23 +217,27 @@ impl Engine {
         self.ctx.clear_kv_cache();
         self.cached.clear();
         self.checkpoint = None;
+        self.sys_checkpoint = None;
     }
 
     /// Generates the assistant reply for `messages`, streaming [`Event`]s.
-    /// Stops on end-of-generation, `max_tokens`, or when `cancel` becomes true.
+    /// Stops on end-of-generation, `max_tokens`, a completed tool call, or when
+    /// `cancel` becomes true. `tools` is the `<tools>` block body, if any.
     ///
     /// Everything streamed before an [`Event::ThinkEnd`] is reasoning. LFM3
     /// fine-tunes sometimes reason even with thinking disabled, so callers
-    /// should handle `ThinkEnd` in both modes.
+    /// should handle `ThinkEnd` in both modes. Tool-call markup is never
+    /// streamed as text; it is returned in [`GenOutput::tool_call`].
     pub fn generate(
         &mut self,
         messages: &[Message],
+        tools: Option<&str>,
         params: &GenParams,
         cancel: &AtomicBool,
         mut on_event: impl FnMut(Event<'_>),
-    ) -> Result<GenStats> {
+    ) -> Result<GenOutput> {
         let n_ctx = self.ctx.n_ctx() as usize;
-        let tokens = self.fit_prompt(messages, params, n_ctx)?;
+        let tokens = self.fit_prompt(messages, tools, params, n_ctx)?;
 
         let mut stats = GenStats { prompt_tokens: tokens.len(), ..Default::default() };
         let t0 = Instant::now();
@@ -206,16 +245,21 @@ impl Engine {
         stats.reused_tokens = start;
 
         // Prompt evaluation in n_batch chunks; logits only for the last token.
+        // Chunks also break at the end of the system turn to checkpoint it.
+        let sys_end = self.system_end(&tokens).filter(|&e| e > start && e < tokens.len());
         let n_batch = self.config.n_batch as usize;
         let mut batch = LlamaBatch::new(n_batch.max(1), 1);
         let mut pos = start;
         while pos < tokens.len() {
             if cancel.load(Ordering::Relaxed) {
                 stats.cancelled = true;
-                return Ok(stats);
+                return Ok(GenOutput { stats, text: String::new(), tool_call: None });
             }
             batch.clear();
-            let end = (pos + n_batch).min(tokens.len());
+            let mut end = (pos + n_batch).min(tokens.len());
+            if let Some(e) = sys_end.filter(|&e| e > pos && e < end) {
+                end = e;
+            }
             for (i, &tok) in tokens[pos..end].iter().enumerate() {
                 let p = pos + i;
                 batch.add(tok, p as i32, &[0], p == tokens.len() - 1)?;
@@ -223,14 +267,13 @@ impl Engine {
             self.ctx.decode(&mut batch).context("prompt decode")?;
             self.cached.extend_from_slice(&tokens[pos..end]);
             pos = end;
+            if Some(end) == sys_end {
+                self.sys_checkpoint = self.snapshot();
+            }
         }
         stats.prompt_ms = t0.elapsed().as_secs_f64() * 1000.0;
         // The rendered prompt is always a prefix of the next turn's prompt.
-        self.checkpoint = self
-            .ctx
-            .state_seq_get(0, LlamaStateSeqFlags::PARTIAL_ONLY)
-            .ok()
-            .map(|s| (self.cached.len(), s));
+        self.checkpoint = self.snapshot();
 
         let mut sampler = self.sampler(params);
         sampler.accept_many(&tokens);
@@ -239,6 +282,11 @@ impl Engine {
         let mut logits_idx = batch.n_tokens() - 1;
         let max_new = (params.max_tokens as usize).min(n_ctx - tokens.len() - 1);
         let t1 = Instant::now();
+        // Every generated piece, special tokens included (for the raw history).
+        let mut raw: Vec<u8> = Vec::new();
+        // Some(bytes) while inside <tool_call>…</tool_call>.
+        let mut tool_buf: Option<Vec<u8>> = None;
+        let mut tool_call = None;
 
         while stats.gen_tokens < max_new {
             if cancel.load(Ordering::Relaxed) {
@@ -251,12 +299,26 @@ impl Engine {
                 break;
             }
             stats.gen_tokens += 1;
-            if Some(token) == self.think_end {
+            let piece = vocab.token_to_piece(token, true, None);
+            raw.extend_from_slice(&piece);
+
+            if Some(token) == self.tool_start && tool_buf.is_none() {
+                if let Some(text) = utf8.flush() {
+                    on_event(Event::Text(&text));
+                }
+                on_event(Event::ToolCallStarted);
+                tool_buf = Some(piece);
+            } else if let Some(buf) = tool_buf.as_mut() {
+                buf.extend_from_slice(&piece);
+                if Some(token) == self.tool_end {
+                    tool_call = Some(String::from_utf8_lossy(buf).into_owned());
+                }
+            } else if Some(token) == self.think_end {
                 if let Some(text) = utf8.flush() {
                     on_event(Event::Text(&text));
                 }
                 on_event(Event::ThinkEnd);
-            } else if let Some(text) = utf8.push(&vocab.token_to_piece(token, true, None)) {
+            } else if let Some(text) = utf8.push(&piece) {
                 on_event(Event::Text(&text));
             }
 
@@ -265,17 +327,28 @@ impl Engine {
             self.ctx.decode(&mut batch).context("token decode")?;
             self.cached.push(token);
             logits_idx = 0;
+            if tool_call.is_some() {
+                // One call per round: the harness runs it and continues.
+                break;
+            }
         }
         if let Some(text) = utf8.flush() {
             on_event(Event::Text(&text));
         }
         stats.gen_ms = t1.elapsed().as_secs_f64() * 1000.0;
-        Ok(stats)
+        Ok(GenOutput { stats, text: String::from_utf8_lossy(&raw).into_owned(), tool_call })
     }
 
-    /// Tokenizes the conversation, dropping the oldest non-system messages until
-    /// it fits with room for a reply (a quarter of the context or `max_tokens`).
-    fn fit_prompt(&self, messages: &[Message], params: &GenParams, n_ctx: usize) -> Result<Vec<LlamaToken>> {
+    /// Tokenizes the conversation, dropping the oldest messages (keeping the
+    /// system prompt) until it fits with room for a reply (a quarter of the
+    /// context or `max_tokens`). The window always starts at a user turn.
+    fn fit_prompt(
+        &self,
+        messages: &[Message],
+        tools: Option<&str>,
+        params: &GenParams,
+        n_ctx: usize,
+    ) -> Result<Vec<LlamaToken>> {
         let reserve = (params.max_tokens as usize).min(n_ctx / 4).max(1);
         let (system, rest) = match messages.split_first() {
             Some((first, rest)) if first.role == Role::System => (Some(first), rest),
@@ -286,14 +359,14 @@ impl Engine {
         for skip in 0..rest.len().max(1) {
             buf.clear();
             buf.extend(system.cloned());
-            // Never start the window on an assistant turn.
+            // Start on a user turn so assistant/tool turns keep their context.
             let window = &rest[skip..];
-            let window = match window.iter().position(|m| m.role != Role::Assistant) {
+            let window = match window.iter().position(|m| m.role == Role::User) {
                 Some(i) => &window[i..],
                 None => continue,
             };
             buf.extend_from_slice(window);
-            let prompt = render_prompt(&self.bos, &buf, params.enable_thinking);
+            let prompt = render_prompt(&self.bos, &buf, tools, params.enable_thinking);
             let tokens = vocab.tokenize(prompt.as_bytes(), false, true);
             if tokens.len() + reserve < n_ctx {
                 return Ok(tokens);
@@ -313,23 +386,52 @@ impl Engine {
         // Pure-attention models can truncate directly. On hybrid ones (LFM3) the
         // recurrent part refuses and nothing is modified.
         if keep > 0 && self.ctx.kv_cache_seq_rm(0, Some(keep as u32), None).is_ok() {
-            self.cached.truncate(keep);
+            self.truncate_cached(keep);
             return keep;
         }
-        if let Some((n, state)) = &self.checkpoint
-            && *n > 0
-            && *n <= keep
+        // Rewind to the furthest checkpoint inside the shared prefix: the end of
+        // the previous prompt, or else the end of the system turn (shared by
+        // every chat with the same system prompt and tools).
+        let best = [&self.checkpoint, &self.sys_checkpoint]
+            .into_iter()
+            .flatten()
+            .filter(|(n, _)| *n > 0 && *n <= keep)
+            .max_by_key(|(n, _)| *n)
+            .map(|(n, s)| (*n, s.clone()));
+        if let Some((n, state)) = best
+            && self.ctx.state_seq_set(&state, 0).is_ok()
+            && self.ctx.kv_cache_seq_rm(0, Some(n as u32), None).is_ok()
         {
-            let n = *n;
-            if self.ctx.state_seq_set(state, 0).is_ok()
-                && self.ctx.kv_cache_seq_rm(0, Some(n as u32), None).is_ok()
-            {
-                self.cached.truncate(n);
-                return n;
-            }
+            self.truncate_cached(n);
+            return n;
         }
         self.reset();
         0
+    }
+
+    /// Shortens the cached tokens, dropping checkpoints that lie beyond them.
+    fn truncate_cached(&mut self, n: usize) {
+        self.cached.truncate(n);
+        for ck in [&mut self.checkpoint, &mut self.sys_checkpoint] {
+            if ck.as_ref().is_some_and(|(m, _)| *m > n) {
+                *ck = None;
+            }
+        }
+    }
+
+    fn snapshot(&self) -> Option<(usize, SeqState)> {
+        self.ctx
+            .state_seq_get(0, LlamaStateSeqFlags::PARTIAL_ONLY)
+            .ok()
+            .map(|s| (self.cached.len(), s))
+    }
+
+    /// Token index just after the system turn (`…<|im_end|>\n`), if any.
+    fn system_end(&self, tokens: &[LlamaToken]) -> Option<usize> {
+        let (im_end, nl) = (self.im_end?, self.newline?);
+        // tokens[0] is BOS, then `<|im_start|>system`.
+        let i = tokens.iter().position(|&t| t == im_end)?;
+        (tokens.get(i + 1) == Some(&nl)).then_some(i + 2)
     }
 
     fn sampler(&self, p: &GenParams) -> LlamaSampler {

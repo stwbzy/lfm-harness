@@ -25,14 +25,33 @@ pub struct StoredMessage {
     pub content: String,
     pub reasoning: String,
     pub stats: Option<String>,
+    /// JSON with tool-call details for tool rounds.
+    pub meta: Option<String>,
     pub created_at: i64,
 }
 
+#[derive(Default)]
 pub struct NewMessage<'a> {
-    pub role: Role,
+    pub role: Option<Role>,
     pub content: &'a str,
     pub reasoning: &'a str,
     pub stats: Option<&'a str>,
+    pub meta: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Note {
+    pub title: String,
+    pub content: String,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct SearchHit {
+    pub conversation_id: i64,
+    pub conversation_title: String,
+    pub role: String,
+    pub snippet: String,
 }
 
 pub struct Store {
@@ -57,18 +76,18 @@ const MIGRATIONS: &[&str] = &["
         created_at      INTEGER NOT NULL
     );
     CREATE INDEX messages_by_conversation ON messages(conversation_id, id);
+", "
+    ALTER TABLE messages ADD COLUMN meta TEXT;
+    CREATE TABLE notes (
+        id          INTEGER PRIMARY KEY,
+        title       TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        content     TEXT NOT NULL,
+        updated_at  INTEGER NOT NULL
+    );
 "];
 
 fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
-}
-
-fn role_str(r: Role) -> &'static str {
-    match r {
-        Role::System => "system",
-        Role::User => "user",
-        Role::Assistant => "assistant",
-    }
 }
 
 /// A short title from the first user message.
@@ -154,7 +173,7 @@ impl Store {
 
     pub fn messages(&self, conversation_id: i64) -> Result<Vec<StoredMessage>> {
         let mut st = self.db.prepare(
-            "SELECT id, conversation_id, role, content, reasoning, stats, created_at
+            "SELECT id, conversation_id, role, content, reasoning, stats, meta, created_at
              FROM messages WHERE conversation_id = ?1 ORDER BY id",
         )?;
         let rows = st.query_map([conversation_id], |r| {
@@ -165,7 +184,8 @@ impl Store {
                 content: r.get(3)?,
                 reasoning: r.get(4)?,
                 stats: r.get(5)?,
-                created_at: r.get(6)?,
+                meta: r.get(6)?,
+                created_at: r.get(7)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -173,12 +193,13 @@ impl Store {
 
     /// Appends a message and bumps the conversation to the top of the list.
     pub fn add_message(&self, conversation_id: i64, m: &NewMessage) -> Result<StoredMessage> {
+        let role = m.role.context("message role missing")?.as_str();
         let t = now_ms();
         let tx = self.db.unchecked_transaction()?;
         tx.execute(
-            "INSERT INTO messages (conversation_id, role, content, reasoning, stats, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![conversation_id, role_str(m.role), m.content, m.reasoning, m.stats, t],
+            "INSERT INTO messages (conversation_id, role, content, reasoning, stats, meta, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![conversation_id, role, m.content, m.reasoning, m.stats, m.meta, t],
         )?;
         let id = tx.last_insert_rowid();
         // Strictly newer than every other conversation, even within the same ms.
@@ -195,13 +216,98 @@ impl Store {
         Ok(StoredMessage {
             id,
             conversation_id,
-            role: role_str(m.role).into(),
+            role: role.into(),
             content: m.content.into(),
             reasoning: m.reasoning.into(),
             stats: m.stats.map(Into::into),
+            meta: m.meta.map(Into::into),
             created_at: t,
         })
     }
+
+    // -- notes (used by the note tools) -----------------------------------
+
+    pub fn note_count(&self) -> Result<usize> {
+        Ok(self.db.query_row("SELECT COUNT(*) FROM notes", [], |r| r.get::<_, i64>(0))? as usize)
+    }
+
+    /// Creates or replaces a note by title (case-insensitive). Returns true if new.
+    pub fn save_note(&self, title: &str, content: &str) -> Result<bool> {
+        let exists = self.get_note(title)?.is_some();
+        self.db.execute(
+            "INSERT INTO notes (title, content, updated_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(title) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at",
+            params![title, content, now_ms()],
+        )?;
+        Ok(!exists)
+    }
+
+    pub fn get_note(&self, title: &str) -> Result<Option<Note>> {
+        Ok(self
+            .db
+            .query_row("SELECT title, content, updated_at FROM notes WHERE title = ?1", [title], |r| {
+                Ok(Note { title: r.get(0)?, content: r.get(1)?, updated_at: r.get(2)? })
+            })
+            .optional()?)
+    }
+
+    /// Most recently updated first.
+    pub fn list_notes(&self) -> Result<Vec<Note>> {
+        let mut st = self.db.prepare("SELECT title, content, updated_at FROM notes ORDER BY updated_at DESC")?;
+        let rows = st.query_map([], |r| Ok(Note { title: r.get(0)?, content: r.get(1)?, updated_at: r.get(2)? }))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn delete_note(&self, title: &str) -> Result<bool> {
+        Ok(self.db.execute("DELETE FROM notes WHERE title = ?1", [title])? > 0)
+    }
+
+    // -- search ---------------------------------------------------------
+
+    /// Case-insensitive substring search over user and final assistant messages.
+    pub fn search_messages(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
+        let pattern = format!("%{}%", query.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+        let mut st = self.db.prepare(
+            "SELECT m.conversation_id, c.title, m.role, m.content
+             FROM messages m JOIN conversations c ON c.id = m.conversation_id
+             WHERE m.role IN ('user', 'assistant') AND m.meta IS NULL
+               AND m.content LIKE ?1 ESCAPE '\\'
+             ORDER BY m.id DESC LIMIT ?2",
+        )?;
+        let rows = st.query_map(params![pattern, limit as i64], |r| {
+            let content: String = r.get(3)?;
+            Ok(SearchHit {
+                conversation_id: r.get(0)?,
+                conversation_title: r.get(1)?,
+                role: r.get(2)?,
+                snippet: snippet(&content, query, 160),
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+}
+
+/// Up to `max` chars of `text` around the first case-insensitive match of `query`.
+fn snippet(text: &str, query: &str, max: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let lower: Vec<char> = text.to_lowercase().chars().collect();
+    let q: Vec<char> = query.to_lowercase().chars().collect();
+    // Lowercasing can change length for a few scripts; fall back to the start.
+    let at = if lower.len() == chars.len() && !q.is_empty() {
+        lower.windows(q.len()).position(|w| w == q.as_slice()).unwrap_or(0)
+    } else {
+        0
+    };
+    let start = at.saturating_sub(max / 3);
+    let end = (start + max).min(chars.len());
+    let mut s: String = chars[start..end].iter().collect();
+    if start > 0 {
+        s.insert(0, '…');
+    }
+    if end < chars.len() {
+        s.push('…');
+    }
+    s
 }
 
 #[cfg(test)]
@@ -209,7 +315,7 @@ mod tests {
     use super::*;
 
     fn msg<'a>(role: Role, content: &'a str) -> NewMessage<'a> {
-        NewMessage { role, content, reasoning: "", stats: None }
+        NewMessage { role: Some(role), content, ..Default::default() }
     }
 
     #[test]
@@ -220,7 +326,13 @@ mod tests {
         s.add_message(a.id, &msg(Role::User, "hola")).unwrap();
         s.add_message(
             a.id,
-            &NewMessage { role: Role::Assistant, content: "hey", reasoning: "pienso", stats: Some("10 tok/s") },
+            &NewMessage {
+                role: Some(Role::Assistant),
+                content: "hey",
+                reasoning: "pienso",
+                stats: Some("10 tok/s"),
+                meta: None,
+            },
         )
         .unwrap();
 
@@ -259,6 +371,48 @@ mod tests {
         let s = Store::open(&path).unwrap();
         assert_eq!(s.list_conversations().unwrap()[0].title, "persist");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn notes_crud() {
+        let s = Store::open_in_memory().unwrap();
+        assert!(s.save_note("Compra", "leche").unwrap());
+        assert!(!s.save_note("compra", "pan").unwrap(), "titles are case-insensitive");
+        assert_eq!(s.note_count().unwrap(), 1);
+        assert_eq!(s.get_note("COMPRA").unwrap().unwrap().content, "pan");
+        assert!(s.delete_note("Compra").unwrap());
+        assert!(!s.delete_note("Compra").unwrap());
+        assert!(s.list_notes().unwrap().is_empty());
+    }
+
+    #[test]
+    fn search_skips_tool_rounds_and_escapes() {
+        let s = Store::open_in_memory().unwrap();
+        let c = s.create_conversation("zorros").unwrap();
+        s.add_message(c.id, &msg(Role::User, "Háblame de los zorros árticos")).unwrap();
+        s.add_message(
+            c.id,
+            &NewMessage { role: Some(Role::Assistant), content: "zorros <tool_call>", meta: Some("{}"), ..Default::default() },
+        )
+        .unwrap();
+        s.add_message(c.id, &msg(Role::User, "100% seguro")).unwrap();
+        let hits = s.search_messages("ZORROS", 5).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].conversation_title, "zorros");
+        assert!(hits[0].snippet.contains("zorros árticos"));
+        assert_eq!(s.search_messages("0%", 5).unwrap().len(), 1);
+        assert!(s.search_messages("%", 5).unwrap().len() == 1, "% is literal");
+    }
+
+    #[test]
+    fn migrates_v1_database() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(MIGRATIONS[0]).unwrap();
+        db.pragma_update(None, "user_version", 1i64).unwrap();
+        db.execute("INSERT INTO conversations (title, created_at, updated_at) VALUES ('old', 1, 1)", []).unwrap();
+        let s = Store::init(db).unwrap();
+        assert_eq!(s.list_conversations().unwrap()[0].title, "old");
+        assert!(s.save_note("a", "b").unwrap());
     }
 
     #[test]
