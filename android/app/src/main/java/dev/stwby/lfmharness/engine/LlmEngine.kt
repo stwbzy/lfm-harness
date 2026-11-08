@@ -29,6 +29,8 @@ data class GenParams(
     val tools: List<String> = emptyList(),
     /** Local date/time text for `get_datetime`. */
     val now: String = "",
+    /** Detect code requests and answer them in code mode (Rust is syntax-checked). */
+    val codeMode: Boolean = true,
 ) {
     fun toJson(): String = JSONObject()
         .put("max_tokens", maxTokens)
@@ -40,6 +42,7 @@ data class GenParams(
         .put("enable_thinking", enableThinking)
         .put("tools", JSONArray(tools))
         .put("now", now)
+        .put("code_mode", codeMode)
         .toString()
 }
 
@@ -55,6 +58,8 @@ data class TurnStats(
     /** Rejected/invalid/failed calls: nothing was done, whatever the model says. */
     val failedCalls: Int,
     val cancelled: Boolean,
+    /** `rust_ok`, `rust_repaired`, `rust_syntax_error`, `unchecked` or null. */
+    val codeCheck: String?,
 )
 
 data class TurnResult(val messages: List<TurnMessage>, val stats: TurnStats) {
@@ -76,6 +81,7 @@ data class TurnResult(val messages: List<TurnMessage>, val stats: TurnStats) {
                 TurnStats(
                     s.getInt("prompt_tokens"), s.getInt("reused_tokens"), s.getInt("gen_tokens"),
                     s.getDouble("gen_tps"), s.getInt("tool_calls"), s.getInt("failed_calls"), s.getBoolean("cancelled"),
+                    if (s.isNull("code_check")) null else s.getString("code_check"),
                 ),
             )
         }

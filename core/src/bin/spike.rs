@@ -23,10 +23,12 @@ fn main() -> Result<()> {
     let mut bench = None;
     let mut tools = Vec::new();
     let mut db = None;
+    let mut code_mode = true;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--think" => params.enable_thinking = true,
             "--tools" => tools = TOOLS.iter().map(|t| t.name.to_string()).collect(),
+            "--no-code-mode" => code_mode = false,
             "--db" => db = Some(args.next().context("--db FILE")?),
             "--ctx" => cfg.n_ctx = args.next().context("--ctx N")?.parse()?,
             "--threads" => cfg.n_threads = args.next().context("--threads N")?.parse()?,
@@ -84,6 +86,8 @@ fn main() -> Result<()> {
             enabled_tools: &tools,
             now: "sábado, 7 de noviembre de 2026, 21:30 (Europe/Madrid, UTC+01:00)",
             limits: &limits,
+            code_mode,
+            repair_attempt: 0,
         };
         let out = run_turn(
             &mut engine,

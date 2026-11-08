@@ -66,6 +66,7 @@ data class Settings(
     val nCtx: Int = 4096,
     val enableThinking: Boolean = false,
     val toolsEnabled: Boolean = true,
+    val codeMode: Boolean = true,
     val enabledTools: Set<String> = TOOL_LABELS.keys,
 )
 
@@ -263,6 +264,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             enableThinking = s.settings.enableThinking,
             tools = if (s.settings.toolsEnabled) TOOL_LABELS.keys.filter { it in s.settings.enabledTools } else emptyList(),
             now = nowText(),
+            codeMode = s.settings.codeMode,
         )
         viewModelScope.launch {
             var convId: Long? = s.currentId
@@ -278,8 +280,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
                 val result = LlmEngine.generate(turns, params, repo.handle, StreamCallback(firstReply.id, params.enableThinking))
                 val st = result.stats
-                val info = "%.1f tok/s · %d tok · prompt %d (%d en caché)%s%s%s".format(
-                    st.genTps, st.genTokens, st.promptTokens, st.reusedTokens,
+                val codeLabel = when (st.codeCheck) {
+                    "rust_ok" -> " · ✓ sintaxis Rust válida (no compilado)"
+                    "rust_repaired" -> " · ✓ sintaxis corregida automáticamente (no compilado)"
+                    "rust_syntax_error" -> " · ⚠ el código Rust tiene errores de sintaxis"
+                    "unchecked" -> " · código no verificado"
+                    else -> ""
+                }
+                val info = "%.1f tok/s · %d tok · prompt %d (%d en caché)%s%s%s%s".format(
+                    st.genTps, st.genTokens, st.promptTokens, st.reusedTokens, codeLabel,
                     if (st.toolCalls > 0) " · ${st.toolCalls} herramienta(s)" else "",
                     if (st.failedCalls > 0) " · ⚠ ${st.failedCalls} acción(es) no realizada(s)" else "",
                     if (st.cancelled) " · detenido" else "",
@@ -444,6 +453,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             nCtx = prefs.getInt("n_ctx", d.nCtx),
             enableThinking = prefs.getBoolean("thinking", d.enableThinking),
             toolsEnabled = prefs.getBoolean("tools_enabled", d.toolsEnabled),
+            codeMode = prefs.getBoolean("code_mode", d.codeMode),
             enabledTools = prefs.getStringSet("enabled_tools", null)?.toSet() ?: d.enabledTools,
         )
     }
@@ -455,6 +465,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         .putInt("n_ctx", s.nCtx)
         .putBoolean("thinking", s.enableThinking)
         .putBoolean("tools_enabled", s.toolsEnabled)
+        .putBoolean("code_mode", s.codeMode)
         .putStringSet("enabled_tools", s.enabledTools)
         .apply()
 }

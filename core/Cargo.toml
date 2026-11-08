@@ -16,10 +16,12 @@ jni = "0.21"
 # Release 0.1.161 on crates.io bundles a llama.cpp without the `lfm3` arch;
 # pin the git revision whose llama.cpp submodule supports it.
 llama-cpp-2 = { git = "https://github.com/utilityai/llama-cpp-rs", rev = "0364f5da1c6a6ee37f507031f116ce4a09b28594", default-features = false, features = ["android-static-stdcxx"] }
+proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
 pulldown-cmark = { version = "0.13.6", default-features = false }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
+syn = { version = "3.0.9", default-features = false, features = ["full", "parsing"] }
 
 [profile.release]
 lto = "thin"

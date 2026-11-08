@@ -1,0 +1,56 @@
+fizzbuzz       round 0: pass           tests 2/2 codes [] (506 tok, 30s) [rust_ok]
+palindrome     round 0: compile_error  tests 0/0 codes ["E0599"] (1202 tok, 67s) [rust_repaired]
+palindrome     round 1: compile_error  tests 0/0 codes ["E0277"] (483 tok, 28s) [rust_ok]
+palindrome     round 2: compile_error  tests 0/0 codes ["E0277"] (481 tok, 34s) [rust_ok]
+word_freq      round 0: compile_error  tests 0/0 codes ["E0425", "E0433"] (1172 tok, 76s) [rust_ok]
+word_freq      round 1: pass           tests 4/4 codes [] (1690 tok, 124s) [rust_repaired]
+stack          round 0: pass           tests 2/2 codes [] (564 tok, 33s) [rust_ok]
+binary_search  round 0: compile_error  tests 0/0 codes ["E0508"] (527 tok, 33s) [rust_ok]
+binary_search  round 1: test_fail      tests 1/3 codes [] (528 tok, 31s) [rust_ok]
+binary_search  round 2: compile_error  tests 0/0 codes ["E0609"] (541 tok, 32s) [rust_ok]
+rpn            round 0: test_fail      tests 0/2 codes [] (1811 tok, 112s) [rust_repaired]
+rpn            round 1: test_fail      tests 1/2 codes [] (863 tok, 52s) [rust_ok]
+rpn            round 2: test_fail      tests 1/2 codes [] (863 tok, 59s) [rust_ok]
+matmul         round 0: pass           tests 4/4 codes [] (714 tok, 40s) [rust_ok]
+linked_list    round 0: compile_error  tests 0/0 codes [] (6144 tok, 391s) [rust_syntax_error]
+linked_list    round 1: compile_error  tests 0/0 codes ["E0308"] (732 tok, 67s) [rust_ok]
+linked_list    round 2: compile_error  tests 0/0 codes ["E0308"] (732 tok, 54s) [rust_ok]
+shapes         round 0: compile_error  tests 0/0 codes ["E0425"] (2103 tok, 153s) [rust_syntax_error]
+shapes         round 1: compile_error  tests 0/0 codes ["E0425"] (1632 tok, 104s) [rust_syntax_error]
+shapes         round 2: compile_error  tests 0/0 codes ["E0425"] (1632 tok, 107s) [rust_syntax_error]
+longest_word   round 0: compile_error  tests 0/0 codes ["E0599"] (425 tok, 23s) [rust_ok]
+longest_word   round 1: test_fail      tests 0/2 codes [] (424 tok, 24s) [rust_ok]
+longest_word   round 2: test_fail      tests 0/2 codes [] (424 tok, 22s) [rust_ok]
+parallel_sum   round 0: compile_error  tests 0/0 codes ["E0308"] (522 tok, 30s) [rust_ok]
+parallel_sum   round 1: compile_error  tests 0/0 codes ["E0308"] (522 tok, 32s) [rust_ok]
+parallel_sum   round 2: compile_error  tests 0/0 codes ["E0308"] (522 tok, 28s) [rust_ok]
+fib_iter       round 0: compile_error  tests 0/0 codes [] (6144 tok, 367s) [rust_syntax_error]
+fib_iter       round 1: compile_error  tests 0/0 codes ["E0425"] (597 tok, 59s) [rust_ok]
+fib_iter       round 2: test_fail      tests 1/2 codes [] (513 tok, 42s) [rust_ok]
+dijkstra       round 0: pass           tests 2/2 codes [] (908 tok, 60s) [rust_ok]
+config         round 0: compile_error  tests 0/0 codes ["E0277", "E0308", "E0369"] (764 tok, 51s) [rust_ok]
+config         round 1: compile_error  tests 0/0 codes ["E0282"] (777 tok, 50s) [rust_ok]
+config         round 2: pass           tests 2/2 codes [] (787 tok, 48s) [rust_ok]
+borrow_fix     round 0: compile_error  tests 0/0 codes ["E0277"] (434 tok, 25s) [rust_ok]
+borrow_fix     round 1: compile_error  tests 0/0 codes ["E0502"] (431 tok, 26s) [rust_ok]
+borrow_fix     round 2: compile_error  tests 0/0 codes ["E0502"] (431 tok, 25s) [rust_ok]
+group_by       round 0: pass           tests 3/3 codes [] (497 tok, 28s) [rust_ok]
+
+== 16 tasks, think=true, repair=2
+fizzbuzz       pass
+palindrome     compile_error -> compile_error -> compile_error
+word_freq      compile_error -> pass
+stack          pass
+binary_search  compile_error -> test_fail -> compile_error
+rpn            test_fail -> test_fail -> test_fail
+matmul         pass
+linked_list    compile_error -> compile_error -> compile_error
+shapes         compile_error -> compile_error -> compile_error
+longest_word   compile_error -> test_fail -> test_fail
+parallel_sum   compile_error -> compile_error -> compile_error
+fib_iter       compile_error -> compile_error -> test_fail
+dijkstra       pass
+config         compile_error -> compile_error -> pass
+borrow_fix     compile_error -> compile_error -> compile_error
+group_by       pass
+pass@1: 5/16   after repair: 7/16

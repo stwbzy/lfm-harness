@@ -1,0 +1,146 @@
+# Rust coding tasks for `cargo run --release --example codebench`.
+# Format: "=== id" starts a task; "--- prompt", "--- tests" and optional
+# "--- forbid" (one substring per line that must not appear) are sections.
+# Tests are hidden from the model and appended as `mod hidden_tests`.
+
+=== fizzbuzz
+--- prompt
+Escribe en Rust `fn fizzbuzz(n: u32) -> Vec<String>` que devuelva los valores de 1 a n: "Fizz" para múltiplos de 3, "Buzz" para múltiplos de 5, "FizzBuzz" para múltiplos de ambos y el número como texto en otro caso.
+--- tests
+#[test] fn basic() { let v = fizzbuzz(15); assert_eq!(v.len(), 15); assert_eq!(v[0], "1"); assert_eq!(v[2], "Fizz"); assert_eq!(v[4], "Buzz"); assert_eq!(v[14], "FizzBuzz"); assert_eq!(v[6], "7"); }
+#[test] fn zero() { assert!(fizzbuzz(0).is_empty()); }
+
+=== palindrome
+--- prompt
+Escribe en Rust `fn is_palindrome(s: &str) -> bool` que ignore mayúsculas/minúsculas y todo carácter que no sea alfanumérico. Debe funcionar con texto Unicode (acentos, ñ): compara caracteres, no bytes.
+--- tests
+#[test] fn yes() { assert!(is_palindrome("Anita lava la tina")); assert!(is_palindrome("A man, a plan, a canal: Panama")); assert!(is_palindrome("")); assert!(is_palindrome("ñoñ")); assert!(is_palindrome("Ésé")); }
+#[test] fn no() { assert!(!is_palindrome("hola")); assert!(!is_palindrome("ab")); assert!(!is_palindrome("ñon")); }
+
+=== word_freq
+--- prompt
+Escribe en Rust `fn word_freq(text: &str) -> Vec<(String, usize)>`. Una palabra es una secuencia de caracteres alfabéticos (Unicode); compáralas en minúsculas. Devuelve cada palabra con su número de apariciones, ordenado por frecuencia descendente y, en caso de empate, alfabéticamente ascendente.
+--- tests
+#[test] fn counts() { assert_eq!(word_freq("Hola hola, mundo! El mundo; hola."), vec![("hola".to_string(), 3), ("mundo".to_string(), 2), ("el".to_string(), 1)]); }
+#[test] fn ties() { assert_eq!(word_freq("b a b a c"), vec![("a".to_string(), 2), ("b".to_string(), 2), ("c".to_string(), 1)]); }
+#[test] fn empty() { assert!(word_freq("  123 ,.; ").is_empty()); }
+#[test] fn unicode() { assert_eq!(word_freq("Ñandú ñandú"), vec![("ñandú".to_string(), 2)]); }
+
+=== stack
+--- prompt
+Implementa en Rust una pila genérica `pub struct Stack<T>` con los métodos `new() -> Self`, `push(&mut self, item: T)`, `pop(&mut self) -> Option<T>`, `peek(&self) -> Option<&T>`, `len(&self) -> usize` e `is_empty(&self) -> bool`. Implementa también `Default` para `Stack<T>`.
+--- tests
+#[test] fn ops() { let mut s: Stack<i32> = Stack::new(); assert!(s.is_empty()); s.push(1); s.push(2); assert_eq!(s.peek(), Some(&2)); assert_eq!(s.len(), 2); assert_eq!(s.pop(), Some(2)); assert_eq!(s.pop(), Some(1)); assert_eq!(s.pop(), None); assert!(s.is_empty()); }
+#[test] fn strings_default() { let mut s: Stack<String> = Stack::default(); s.push("a".into()); assert_eq!(s.peek().map(|x| x.as_str()), Some("a")); assert_eq!(s.len(), 1); }
+
+=== binary_search
+--- prompt
+Escribe en Rust `fn binary_search<T: Ord>(items: &[T], target: &T) -> Option<usize>` que haga búsqueda binaria sobre un slice ordenado y devuelva el índice del elemento si existe. No uses los métodos de búsqueda de la biblioteca estándar (`binary_search`, `contains`, `iter().position`...).
+--- tests
+#[test] fn found() { let v: Vec<i32> = (0..1000).map(|x| x * 2).collect(); for (i, x) in v.iter().enumerate() { assert_eq!(binary_search(&v, x), Some(i)); } }
+#[test] fn missing() { let v: Vec<i32> = (0..1000).map(|x| x * 2).collect(); for x in [-1, 1, 999, 1999, 5000] { assert_eq!(binary_search(&v, &x), None); } }
+#[test] fn edges() { let e: Vec<i32> = vec![]; assert_eq!(binary_search(&e, &1), None); assert_eq!(binary_search(&[7], &7), Some(0)); assert_eq!(binary_search(&["a", "c"], &"b"), None); }
+--- forbid
+.binary_search(
+.position(
+.contains(
+
+=== rpn
+--- prompt
+Escribe en Rust `fn eval_rpn(expr: &str) -> Result<i64, String>` que evalúe una expresión en notación polaca inversa: enteros (pueden ser negativos, como "-3") y operadores `+ - * /` separados por espacios. Devuelve `Err` si hay división por cero, un token inválido, faltan operandos o al final queda un número de valores distinto de uno.
+--- tests
+#[test] fn ok() { assert_eq!(eval_rpn("3 4 + 2 *"), Ok(14)); assert_eq!(eval_rpn("5 1 2 + 4 * + 3 -"), Ok(14)); assert_eq!(eval_rpn("-3 4 *"), Ok(-12)); assert_eq!(eval_rpn("10 3 -"), Ok(7)); assert_eq!(eval_rpn("7 2 /"), Ok(3)); }
+#[test] fn errors() { assert!(eval_rpn("4 0 /").is_err()); assert!(eval_rpn("1 +").is_err()); assert!(eval_rpn("1 2").is_err()); assert!(eval_rpn("2 x +").is_err()); assert!(eval_rpn("").is_err()); }
+
+=== matmul
+--- prompt
+Escribe en Rust `fn mat_mul(a: &[Vec<f64>], b: &[Vec<f64>]) -> Option<Vec<Vec<f64>>>` que multiplique dos matrices. Devuelve `None` si las dimensiones no son compatibles o si alguna matriz tiene filas de distinta longitud.
+--- tests
+#[test] fn product() { let a = vec![vec![1.0, 2.0, 3.0], vec![4.0, 5.0, 6.0]]; let b = vec![vec![7.0, 8.0], vec![9.0, 10.0], vec![11.0, 12.0]]; assert_eq!(mat_mul(&a, &b), Some(vec![vec![58.0, 64.0], vec![139.0, 154.0]])); }
+#[test] fn identity() { let a = vec![vec![2.0, 3.0], vec![4.0, 5.0]]; let i = vec![vec![1.0, 0.0], vec![0.0, 1.0]]; assert_eq!(mat_mul(&a, &i), Some(a.clone())); }
+#[test] fn mismatch() { let a = vec![vec![1.0, 2.0]]; let b = vec![vec![1.0, 2.0]]; assert_eq!(mat_mul(&a, &b), None); }
+#[test] fn ragged() { let a = vec![vec![1.0, 2.0], vec![3.0]]; let b = vec![vec![1.0], vec![2.0]]; assert_eq!(mat_mul(&a, &b), None); }
+
+=== linked_list
+--- prompt
+Dada esta definición en Rust:
+```rust
+#[derive(Debug, PartialEq)]
+pub struct Node { pub val: i32, pub next: Option<Box<Node>> }
+```
+Implementa `fn from_vec(v: &[i32]) -> Option<Box<Node>>`, `fn to_vec(head: &Option<Box<Node>>) -> Vec<i32>` y `fn reverse(head: Option<Box<Node>>) -> Option<Box<Node>>` (iterativa, sin clonar nodos). Incluye la definición de `Node` en tu respuesta.
+--- tests
+#[test] fn roundtrip() { assert_eq!(to_vec(&from_vec(&[1, 2, 3])), vec![1, 2, 3]); assert_eq!(to_vec(&from_vec(&[])), Vec::<i32>::new()); }
+#[test] fn rev() { assert_eq!(to_vec(&reverse(from_vec(&[1, 2, 3, 4]))), vec![4, 3, 2, 1]); assert_eq!(reverse(None), None); assert_eq!(to_vec(&reverse(from_vec(&[9]))), vec![9]); }
+
+=== shapes
+--- prompt
+En Rust, define `pub trait Shape { fn area(&self) -> f64; fn name(&self) -> String; }` y las estructuras `pub struct Circle { pub radius: f64 }` y `pub struct Rect { pub w: f64, pub h: f64 }` que lo implementen (nombres "círculo" y "rectángulo"). Escribe además `fn total_area(shapes: &[Box<dyn Shape>]) -> f64` y `fn largest(shapes: &[Box<dyn Shape>]) -> Option<String>` que devuelva el nombre de la figura de mayor área.
+--- tests
+#[test] fn areas() { let v: Vec<Box<dyn Shape>> = vec![Box::new(Circle { radius: 1.0 }), Box::new(Rect { w: 2.0, h: 3.0 })]; assert!((total_area(&v) - (std::f64::consts::PI + 6.0)).abs() < 1e-9); assert_eq!(largest(&v), Some("rectángulo".to_string())); }
+#[test] fn circle_wins() { let v: Vec<Box<dyn Shape>> = vec![Box::new(Rect { w: 1.0, h: 1.0 }), Box::new(Circle { radius: 2.0 })]; assert_eq!(largest(&v), Some("círculo".to_string())); }
+#[test] fn empty() { let v: Vec<Box<dyn Shape>> = vec![]; assert_eq!(total_area(&v), 0.0); assert_eq!(largest(&v), None); }
+
+=== longest_word
+--- prompt
+Escribe en Rust `fn longest_word(s: &str) -> Option<&str>` que devuelva la palabra más larga (separadas por espacios en blanco), midiendo la longitud en caracteres Unicode, no en bytes. En caso de empate devuelve la primera. No crees `String`s nuevas: devuelve un trozo del texto original.
+--- tests
+#[test] fn basic() { assert_eq!(longest_word("el murciélago comió"), Some("murciélago")); assert_eq!(longest_word("aa bb"), Some("aa")); assert_eq!(longest_word("   "), None); assert_eq!(longest_word(""), None); }
+#[test] fn unicode_chars_not_bytes() { assert_eq!(longest_word("ñññ aaaa"), Some("aaaa")); }
+
+=== parallel_sum
+--- prompt
+Escribe en Rust `fn parallel_sum(data: &[u64], threads: usize) -> u64` que reparta la suma entre `threads` hilos usando `std::thread::scope` (si `threads` es 0 usa 1; puede haber más hilos que elementos).
+--- tests
+#[test] fn sums() { let v: Vec<u64> = (1..=100_000).collect(); assert_eq!(parallel_sum(&v, 4), 5_000_050_000); assert_eq!(parallel_sum(&v, 0), 5_000_050_000); assert_eq!(parallel_sum(&v, 7), 5_000_050_000); }
+#[test] fn small() { assert_eq!(parallel_sum(&[1, 2, 3], 10), 6); assert_eq!(parallel_sum(&[], 3), 0); }
+
+=== fib_iter
+--- prompt
+En Rust, crea `pub struct Fib` que implemente `Iterator<Item = u64>` produciendo la sucesión de Fibonacci 0, 1, 1, 2, 3, 5, ... y que termine (devuelva `None`) cuando el siguiente valor ya no quepa en un `u64`, sin provocar pánico por desbordamiento. Añade `fn fib() -> Fib`.
+--- tests
+#[test] fn first() { assert_eq!(fib().take(10).collect::<Vec<_>>(), vec![0, 1, 1, 2, 3, 5, 8, 13, 21, 34]); }
+#[test] fn ends_without_overflow() { let all: Vec<u64> = fib().collect(); assert_eq!(all.len(), 94); assert_eq!(*all.last().unwrap(), 12_200_160_415_121_876_738); }
+
+=== dijkstra
+--- prompt
+Escribe en Rust `fn shortest_path(n: usize, edges: &[(usize, usize, u32)], src: usize, dst: usize) -> Option<u32>` que calcule la distancia mínima en un grafo dirigido de `n` nodos con pesos no negativos (algoritmo de Dijkstra con `std::collections::BinaryHeap`). Devuelve `None` si `dst` no es alcanzable.
+--- tests
+#[test] fn paths() { let e = [(0, 1, 4), (0, 2, 1), (2, 1, 2), (1, 3, 1), (2, 3, 5)]; assert_eq!(shortest_path(4, &e, 0, 3), Some(4)); assert_eq!(shortest_path(4, &e, 0, 0), Some(0)); assert_eq!(shortest_path(4, &e, 3, 0), None); }
+#[test] fn parallel_edges() { let e = [(0, 1, 10), (0, 1, 3), (1, 2, 3), (0, 2, 7)]; assert_eq!(shortest_path(3, &e, 0, 2), Some(6)); }
+
+=== config
+--- prompt
+En Rust, con este tipo de error:
+```rust
+#[derive(Debug, PartialEq)]
+pub enum ConfigError { MissingEquals { line: usize }, EmptyKey { line: usize }, DuplicateKey { key: String, line: usize } }
+```
+escribe `fn parse_config(input: &str) -> Result<std::collections::HashMap<String, String>, ConfigError>` que lea líneas `clave = valor` (recortando espacios en clave y valor), ignore líneas vacías y las que empiezan por `#`, y devuelva el error correspondiente con el número de línea (empezando en 1). Incluye la definición de `ConfigError`.
+--- tests
+#[test] fn ok() { let m = parse_config("# c\nname = Ana\n\n edad=30 \nurl = a=b").unwrap(); assert_eq!(m.len(), 3); assert_eq!(m["name"], "Ana"); assert_eq!(m["edad"], "30"); assert_eq!(m["url"], "a=b"); }
+#[test] fn errors() { assert_eq!(parse_config("a=1\nsin igual"), Err(ConfigError::MissingEquals { line: 2 })); assert_eq!(parse_config(" = x"), Err(ConfigError::EmptyKey { line: 1 })); assert_eq!(parse_config("k=1\n#x\nk=2"), Err(ConfigError::DuplicateKey { key: "k".into(), line: 3 })); }
+
+=== borrow_fix
+--- prompt
+Este código Rust no compila. Arréglalo manteniendo la firma y el comportamiento esperado (añadir al final, una vez por cada nombre original de menos de 3 caracteres, una copia con el sufijo "_x"), y explica el error en una frase:
+```rust
+fn add_suffix(names: &mut Vec<String>) {
+    for name in names.iter() {
+        if name.len() < 3 {
+            names.push(format!("{}_x", name));
+        }
+    }
+}
+```
+--- tests
+#[test] fn suffix() { let mut v = vec!["ab".to_string(), "abcd".into(), "c".into()]; add_suffix(&mut v); assert_eq!(v, vec!["ab", "abcd", "c", "ab_x", "c_x"]); }
+#[test] fn none() { let mut v = vec!["long".to_string()]; add_suffix(&mut v); assert_eq!(v, vec!["long"]); }
+
+=== group_by
+--- prompt
+Escribe en Rust la función genérica `fn group_by<T, K, F>(items: Vec<T>, key: F) -> std::collections::BTreeMap<K, Vec<T>> where K: Ord, F: Fn(&T) -> K` que agrupe los elementos por la clave que devuelve `key`, conservando el orden original dentro de cada grupo.
+--- tests
+#[test] fn parity() { let g = group_by(vec![1, 2, 3, 4, 5], |x| x % 2); assert_eq!(g[&0], vec![2, 4]); assert_eq!(g[&1], vec![1, 3, 5]); assert_eq!(g.len(), 2); }
+#[test] fn strings() { let g = group_by(vec!["ana", "bo", "al", "bea"], |s| s.chars().next().unwrap()); assert_eq!(g[&'a'], vec!["ana", "al"]); assert_eq!(g[&'b'], vec!["bo", "bea"]); }
+#[test] fn empty() { let g = group_by(Vec::<i32>::new(), |x| *x); assert!(g.is_empty()); }

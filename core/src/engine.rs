@@ -15,6 +15,8 @@ use llama_cpp_2::model::LlamaModel;
 use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::token::LlamaToken;
+use llama_cpp_2::token::logit_bias::LlamaLogitBias;
+use llama_cpp_2::vocab::LlamaVocab;
 use llama_cpp_2::{LlamaStateSeqFlags, SeqState};
 
 use crate::chat::{Message, Role, render_prompt};
@@ -60,6 +62,17 @@ pub struct GenParams {
     pub repeat_last_n: i32,
     pub seed: u32,
     pub enable_thinking: bool,
+    /// Text the answer is forced to start with (e.g. "```rust\n"). Without
+    /// thinking it is appended to the prompt; with thinking it is injected
+    /// right after `</think>`.
+    pub answer_prefill: String,
+    /// Stop once the answer (after the prefill) contains any of these.
+    pub stop_after: Vec<String>,
+    /// With thinking on: force `</think>` (+ prefill) after this many
+    /// reasoning tokens. 0 = no limit.
+    pub max_think_tokens: u32,
+    /// When false, `<tool_call>` can never be sampled.
+    pub allow_tool_calls: bool,
 }
 
 impl Default for GenParams {
@@ -75,6 +88,10 @@ impl Default for GenParams {
             repeat_last_n: 64,
             seed: 0xC0FFEE,
             enable_thinking: false,
+            answer_prefill: String::new(),
+            stop_after: Vec::new(),
+            max_think_tokens: 0,
+            allow_tool_calls: true,
         }
     }
 }
@@ -287,6 +304,15 @@ impl Engine {
         // Some(bytes) while inside <tool_call>…</tool_call>.
         let mut tool_buf: Option<Vec<u8>> = None;
         let mut tool_call = None;
+        // Answer phase: immediately without thinking (prefill is in the prompt).
+        let mut in_answer = !params.enable_thinking;
+        let mut think_tokens = 0u32;
+        // Answer text after the prefill, for `stop_after`.
+        let mut answer: Vec<u8> = Vec::new();
+        if in_answer && !params.answer_prefill.is_empty() {
+            raw.extend_from_slice(params.answer_prefill.as_bytes());
+            on_event(Event::Text(&params.answer_prefill));
+        }
 
         while stats.gen_tokens < max_new {
             if cancel.load(Ordering::Relaxed) {
@@ -307,7 +333,7 @@ impl Engine {
                     on_event(Event::Text(&text));
                 }
                 on_event(Event::ToolCallStarted);
-                tool_buf = Some(piece);
+                tool_buf = Some(piece.clone());
             } else if let Some(buf) = tool_buf.as_mut() {
                 buf.extend_from_slice(&piece);
                 if Some(token) == self.tool_end {
@@ -330,6 +356,38 @@ impl Engine {
             if tool_call.is_some() {
                 // One call per round: the harness runs it and continues.
                 break;
+            }
+
+            if !in_answer {
+                think_tokens += 1;
+                let natural_end = Some(token) == self.think_end;
+                let over_budget = params.max_think_tokens > 0 && think_tokens >= params.max_think_tokens;
+                if natural_end || over_budget {
+                    in_answer = true;
+                    let mut forced = String::new();
+                    if !natural_end {
+                        // Budget exhausted: close the reasoning ourselves.
+                        if let Some(text) = utf8.flush() {
+                            on_event(Event::Text(&text));
+                        }
+                        on_event(Event::ThinkEnd);
+                        forced.push_str("</think>");
+                    }
+                    if !params.answer_prefill.is_empty() {
+                        on_event(Event::Text(&params.answer_prefill));
+                        forced.push_str(&params.answer_prefill);
+                    }
+                    if !forced.is_empty() {
+                        raw.extend_from_slice(forced.as_bytes());
+                        logits_idx = inject(&mut self.ctx, &mut self.cached, &vocab, &forced, &mut batch, &mut sampler)?;
+                    }
+                }
+            } else if !params.stop_after.is_empty() {
+                answer.extend_from_slice(&piece);
+                let tail = &answer[answer.len().saturating_sub(24)..];
+                if params.stop_after.iter().any(|s| contains_bytes(tail, s.as_bytes())) {
+                    break;
+                }
             }
         }
         if let Some(text) = utf8.flush() {
@@ -366,7 +424,10 @@ impl Engine {
                 None => continue,
             };
             buf.extend_from_slice(window);
-            let prompt = render_prompt(&self.bos, &buf, tools, params.enable_thinking);
+            let mut prompt = render_prompt(&self.bos, &buf, tools, params.enable_thinking);
+            if !params.enable_thinking {
+                prompt.push_str(&params.answer_prefill);
+            }
             let tokens = vocab.tokenize(prompt.as_bytes(), false, true);
             if tokens.len() + reserve < n_ctx {
                 return Ok(tokens);
@@ -435,12 +496,18 @@ impl Engine {
     }
 
     fn sampler(&self, p: &GenParams) -> LlamaSampler {
-        let mut chain = vec![
+        let mut chain = Vec::new();
+        if !p.allow_tool_calls
+            && let Some(t) = self.tool_start
+        {
+            chain.push(LlamaSampler::logit_bias(self.model.n_vocab(), &[LlamaLogitBias::new(t, f32::NEG_INFINITY)]));
+        }
+        chain.extend([
             LlamaSampler::penalties(self.model.n_vocab(), p.repeat_last_n, p.repeat_penalty, 0.0, 0.0),
             LlamaSampler::top_k(p.top_k),
             LlamaSampler::top_p(p.top_p, 1),
             LlamaSampler::min_p(p.min_p, 1),
-        ];
+        ]);
         if p.temperature <= 0.0 {
             chain.push(LlamaSampler::greedy());
         } else {
@@ -449,6 +516,31 @@ impl Engine {
         }
         LlamaSampler::chain_simple(chain)
     }
+}
+
+/// Feeds forced text (closing `</think>`, answer prefill) into the context as
+/// if the model had generated it. Returns the batch index holding the logits.
+fn inject(
+    ctx: &mut LlamaContext<'static>,
+    cached: &mut Vec<LlamaToken>,
+    vocab: &LlamaVocab<'_>,
+    text: &str,
+    batch: &mut LlamaBatch,
+    sampler: &mut LlamaSampler,
+) -> Result<i32> {
+    let toks = vocab.tokenize(text.as_bytes(), false, true);
+    batch.clear();
+    for (i, &t) in toks.iter().enumerate() {
+        batch.add(t, (cached.len() + i) as i32, &[0], i + 1 == toks.len())?;
+    }
+    ctx.decode(batch).context("inject decode")?;
+    cached.extend_from_slice(&toks);
+    sampler.accept_many(&toks);
+    Ok(batch.n_tokens() - 1)
+}
+
+fn contains_bytes(hay: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty() && hay.windows(needle.len()).any(|w| w == needle)
 }
 
 /// (generation threads, prompt threads). On big.LITTLE phones generation is

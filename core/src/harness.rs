@@ -8,6 +8,7 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::chat::{Message, Role, assistant_prefix};
+use crate::codecheck::{self, CodeIntent};
 use crate::engine::{Engine, Event, GenParams, GenStats};
 use crate::store::Store;
 use crate::tools::{self, Limits, Policy, ToolContext};
@@ -19,6 +20,11 @@ pub struct TurnRequest<'a> {
     pub enabled_tools: &'a [String],
     pub now: &'a str,
     pub limits: &'a Limits,
+    /// Detect code requests and answer them in code mode.
+    pub code_mode: bool,
+    /// 0 for a normal turn; N > 0 when this turn is the N-th attempt to fix
+    /// a previous answer (samples hotter, see [`repair_profile`]).
+    pub repair_attempt: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -57,6 +63,9 @@ pub struct TurnStats {
     /// whatever the model's final answer claims.
     pub failed_calls: usize,
     pub cancelled: bool,
+    /// Code mode only: `rust_ok`, `rust_repaired`, `rust_syntax_error` or
+    /// `unchecked` (another language). Syntax only — nothing is compiled.
+    pub code_check: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -77,6 +86,15 @@ pub fn run_turn(
 ) -> Result<TurnOutput> {
     let block = tools::tools_block(req.enabled_tools);
     let tools_opt = (!block.is_empty()).then_some(block.as_str());
+    let intent = req
+        .code_mode
+        .then(|| req.messages.iter().rev().find(|m| m.role == Role::User))
+        .flatten()
+        .and_then(|m| codecheck::detect_code_intent(&m.content));
+    let code_params = intent.as_ref().map(|i| code_profile(req.params, i)).map(|p| {
+        if req.repair_attempt > 0 { repair_profile(&p, req.repair_attempt) } else { p }
+    });
+    let params = code_params.as_ref().unwrap_or(req.params);
     let mut convo = req.messages.to_vec();
     let mut out = Vec::new();
     let mut stats = TurnStats::default();
@@ -88,7 +106,7 @@ pub fn run_turn(
         if round > 0 {
             on_event(TurnEvent::NewMessage);
         }
-        let round_out = engine.generate(&convo, tools_opt, req.params, cancel, |ev| match ev {
+        let round_out = engine.generate(&convo, tools_opt, params, cancel, |ev| match ev {
             Event::Text(t) => on_event(TurnEvent::Text(t)),
             Event::ThinkEnd => on_event(TurnEvent::ThinkEnd),
             Event::ToolCallStarted => on_event(TurnEvent::ToolCallStarted),
@@ -98,7 +116,19 @@ pub fn run_turn(
         gen_tokens += round_out.stats.gen_tokens;
 
         let Some(raw_call) = round_out.tool_call else {
-            let (reasoning, content) = split_reasoning(&round_out.text, req.params.enable_thinking);
+            let (mut reasoning, mut content) = split_reasoning(&round_out.text, params.enable_thinking);
+            if let Some(intent) = &intent
+                && !round_out.stats.cancelled
+            {
+                let raw = format!("{}{}", assistant_prefix(params.enable_thinking), round_out.text);
+                let check = verify_code(engine, &convo, &raw, &content, intent, tools_opt, params, cancel, &mut on_event)?;
+                stats.code_check = Some(check.status.into());
+                if let Some((r, c, g)) = check.replacement {
+                    (reasoning, content) = (r, c);
+                    gen_ms += g.gen_ms;
+                    gen_tokens += g.gen_tokens;
+                }
+            }
             if !content.is_empty() || !reasoning.is_empty() {
                 out.push(TurnMessage { role: "assistant", content, reasoning, meta: None });
             }
@@ -174,6 +204,88 @@ pub fn run_turn(
     stats.gen_tokens = gen_tokens;
     stats.gen_tps = if gen_ms > 0.0 { gen_tokens as f64 * 1000.0 / gen_ms } else { 0.0 };
     Ok(TurnOutput { messages: out, stats })
+}
+
+/// Sampling for code: deterministic-ish, no repetition penalty (code repeats
+/// `}`, `;`, identifiers legitimately), answer forced into a fenced block that
+/// ends generation when closed, a short reasoning budget and no tool calls.
+pub fn code_profile(base: &GenParams, intent: &CodeIntent) -> GenParams {
+    GenParams {
+        temperature: 0.15,
+        top_k: 40,
+        top_p: 1.0,
+        min_p: 0.1,
+        repeat_penalty: 1.0,
+        max_tokens: base.max_tokens.max(1536),
+        answer_prefill: intent.prefill(),
+        stop_after: vec!["```".into()],
+        max_think_tokens: if base.enable_thinking { 384 } else { 0 },
+        allow_tool_calls: false,
+        ..base.clone()
+    }
+}
+
+/// Sampling for a repair attempt. At code-mode temperature the model tends to
+/// return the very same answer even after seeing the error (9 of 26 repairs in
+/// the benchmark), so repairs sample hotter and with a different seed.
+pub fn repair_profile(params: &GenParams, attempt: u32) -> GenParams {
+    GenParams {
+        temperature: params.temperature.max(0.6),
+        seed: params.seed.wrapping_add(attempt.wrapping_mul(7919)),
+        ..params.clone()
+    }
+}
+
+struct CodeCheck {
+    status: &'static str,
+    /// (reasoning, content, stats) of the repaired answer, if one was made.
+    replacement: Option<(String, String, GenStats)>,
+}
+
+/// Rust answers are syntax-checked with `syn`; on error the model gets one
+/// repair round with a single, precise error message.
+#[allow(clippy::too_many_arguments)]
+fn verify_code(
+    engine: &mut Engine,
+    convo: &[Message],
+    raw_answer: &str,
+    content: &str,
+    intent: &CodeIntent,
+    tools: Option<&str>,
+    params: &GenParams,
+    cancel: &AtomicBool,
+    on_event: &mut impl FnMut(TurnEvent<'_>),
+) -> Result<CodeCheck> {
+    let is_rust = intent.lang == Some("rust") || content.starts_with("```rust") || content.starts_with("```rs");
+    let unchecked = CodeCheck { status: "unchecked", replacement: None };
+    if !is_rust {
+        return Ok(unchecked);
+    }
+    let Some(code) = codecheck::first_code_block(content) else { return Ok(unchecked) };
+    let err = match codecheck::check_rust_syntax(code) {
+        Ok(_) => return Ok(CodeCheck { status: "rust_ok", replacement: None }),
+        Err(e) => e,
+    };
+    let feedback = err.feedback();
+    on_event(TurnEvent::ToolCall { name: "rust_syntax_check", args: "{}" });
+    on_event(TurnEvent::ToolResult { name: "rust_syntax_check", ok: false, content: &feedback });
+    on_event(TurnEvent::NewMessage);
+
+    let mut repair = convo.to_vec();
+    repair.push(Message::new(Role::Assistant, raw_answer));
+    repair.push(Message::new(Role::User, feedback));
+    let repair_params = repair_profile(params, 1);
+    let fixed = engine.generate(&repair, tools, &repair_params, cancel, |ev| match ev {
+        Event::Text(t) => on_event(TurnEvent::Text(t)),
+        Event::ThinkEnd => on_event(TurnEvent::ThinkEnd),
+        Event::ToolCallStarted => {}
+    })?;
+    let (reasoning, content) = split_reasoning(&fixed.text, params.enable_thinking);
+    let ok = codecheck::first_code_block(&content).is_some_and(|c| codecheck::check_rust_syntax(c).is_ok());
+    Ok(CodeCheck {
+        status: if ok { "rust_repaired" } else { "rust_syntax_error" },
+        replacement: Some((reasoning, content, fixed.stats)),
+    })
 }
 
 /// Last round's prompt figures are the meaningful ones.

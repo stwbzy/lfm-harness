@@ -1,0 +1,63 @@
+fizzbuzz       round 0: pass           tests 2/2 codes [] (126 tok, 8s) [rust_ok]
+palindrome     round 0: compile_error  tests 0/0 codes ["E0599"] (105 tok, 6s) [rust_ok]
+palindrome     round 1: compile_error  tests 0/0 codes ["E0586", "E0599"] (194 tok, 14s) [rust_syntax_error]
+palindrome     round 2: compile_error  tests 0/0 codes ["E0586", "E0599"] (211 tok, 24s) [rust_syntax_error]
+word_freq      round 0: compile_error  tests 0/0 codes ["E0277", "E0425", "E0433"] (234 tok, 21s) [rust_ok]
+word_freq      round 1: compile_error  tests 0/0 codes ["E0277"] (242 tok, 19s) [rust_ok]
+word_freq      round 2: compile_error  tests 0/0 codes ["E0277"] (240 tok, 24s) [rust_ok]
+stack          round 0: compile_error  tests 0/0 codes ["E0283", "E0599"] (448 tok, 30s) [rust_ok]
+stack          round 1: compile_error  tests 0/0 codes ["E0599"] (468 tok, 29s) [rust_ok]
+stack          round 2: compile_error  tests 0/0 codes ["E0599"] (519 tok, 32s) [rust_ok]
+binary_search  round 0: compile_error  tests 0/0 codes ["E0308"] (114 tok, 9s) [rust_ok]
+binary_search  round 1: pass           tests 3/3 codes [] (116 tok, 9s) [rust_ok]
+rpn            round 0: compile_error  tests 0/0 codes ["E0277"] (427 tok, 24s) [rust_ok]
+rpn            round 1: compile_error  tests 0/0 codes ["E0277"] (427 tok, 24s) [rust_ok]
+rpn            round 2: compile_error  tests 0/0 codes ["E0277"] (427 tok, 26s) [rust_ok]
+matmul         round 0: compile_error  tests 0/0 codes ["E0599"] (447 tok, 25s) [rust_ok]
+matmul         round 1: pass           tests 4/4 codes [] (531 tok, 39s) [rust_ok]
+linked_list    round 0: compile_error  tests 0/0 codes [] (3072 tok, 234s) [rust_syntax_error]
+linked_list    round 1: compile_error  tests 0/0 codes ["E0308", "E0502", "E0507"] (329 tok, 35s) [rust_ok]
+linked_list    round 2: compile_error  tests 0/0 codes ["E0308", "E0502", "E0507"] (329 tok, 27s) [rust_ok]
+shapes         round 0: compile_error  tests 0/0 codes ["E0599"] (310 tok, 24s) [rust_ok]
+shapes         round 1: compile_error  tests 0/0 codes ["E0599", "E0616"] (321 tok, 26s) [rust_ok]
+shapes         round 2: compile_error  tests 0/0 codes ["E0599", "E0616"] (321 tok, 26s) [rust_ok]
+longest_word   round 0: compile_error  tests 0/0 codes ["E0277", "E0308"] (47 tok, 4s) [rust_ok]
+longest_word   round 1: compile_error  tests 0/0 codes ["E0277", "E0308"] (55 tok, 6s) [rust_ok]
+longest_word   round 2: compile_error  tests 0/0 codes ["E0277", "E0308"] (59 tok, 5s) [rust_ok]
+parallel_sum   round 0: compile_error  tests 0/0 codes [] (2272 tok, 140s) [rust_syntax_error]
+parallel_sum   round 1: compile_error  tests 0/0 codes [] (2182 tok, 150s) [rust_syntax_error]
+parallel_sum   round 2: compile_error  tests 0/0 codes [] (432 tok, 47s) [rust_syntax_error]
+fib_iter       round 0: test_fail      tests 0/2 codes [] (159 tok, 11s) [rust_ok]
+fib_iter       round 1: test_fail      tests 0/2 codes [] (159 tok, 9s) [rust_ok]
+fib_iter       round 2: test_fail      tests 0/2 codes [] (159 tok, 10s) [rust_ok]
+dijkstra       round 0: compile_error  tests 0/0 codes ["E0308", "E0425"] (434 tok, 34s) [rust_ok]
+dijkstra       round 1: compile_error  tests 0/0 codes ["E0308"] (403 tok, 31s) [rust_ok]
+dijkstra       round 2: compile_error  tests 0/0 codes ["E0308"] (403 tok, 32s) [rust_ok]
+config         round 0: compile_error  tests 0/0 codes ["E0308", "E0428"] (2196 tok, 147s) [rust_repaired]
+config         round 1: compile_error  tests 0/0 codes ["E0308"] (361 tok, 35s) [rust_ok]
+config         round 2: compile_error  tests 0/0 codes ["E0277", "E0308"] (365 tok, 24s) [rust_ok]
+borrow_fix     round 0: compile_error  tests 0/0 codes ["E0502"] (47 tok, 3s) [rust_ok]
+borrow_fix     round 1: compile_error  tests 0/0 codes ["E0502"] (47 tok, 4s) [rust_ok]
+borrow_fix     round 2: compile_error  tests 0/0 codes ["E0499"] (48 tok, 5s) [rust_ok]
+group_by       round 0: compile_error  tests 0/0 codes ["E0425", "E0428", "E0573", "E0599"] (282 tok, 18s) [rust_ok]
+group_by       round 1: compile_error  tests 0/0 codes ["E0599"] (118 tok, 9s) [rust_ok]
+group_by       round 2: compile_error  tests 0/0 codes ["E0599"] (118 tok, 8s) [rust_ok]
+
+== 16 tasks, think=false, repair=2
+fizzbuzz       pass
+palindrome     compile_error -> compile_error -> compile_error
+word_freq      compile_error -> compile_error -> compile_error
+stack          compile_error -> compile_error -> compile_error
+binary_search  compile_error -> pass
+rpn            compile_error -> compile_error -> compile_error
+matmul         compile_error -> pass
+linked_list    compile_error -> compile_error -> compile_error
+shapes         compile_error -> compile_error -> compile_error
+longest_word   compile_error -> compile_error -> compile_error
+parallel_sum   compile_error -> compile_error -> compile_error
+fib_iter       test_fail -> test_fail -> test_fail
+dijkstra       compile_error -> compile_error -> compile_error
+config         compile_error -> compile_error -> compile_error
+borrow_fix     compile_error -> compile_error -> compile_error
+group_by       compile_error -> compile_error -> compile_error
+pass@1: 1/16   after repair: 3/16

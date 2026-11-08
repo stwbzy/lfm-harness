@@ -545,6 +545,17 @@ private fun SettingsDialog(initial: Settings, onDismiss: () -> Unit, onSave: (Se
                     Text("Razonamiento (thinking)", Modifier.weight(1f))
                     Switch(s.enableThinking, { s = s.copy(enableThinking = it) })
                 }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Modo código automático")
+                        Text(
+                            "Respuesta en un solo bloque, muestreo preciso; Rust se revisa con syn",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(s.codeMode, { s = s.copy(codeMode = it) })
+                }
                 HorizontalDivider(Modifier.padding(vertical = 8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {

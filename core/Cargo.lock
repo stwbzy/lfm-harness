@@ -146,10 +146,12 @@ dependencies = [
  "anyhow",
  "jni",
  "llama-cpp-2",
+ "proc-macro2",
  "pulldown-cmark",
  "rusqlite",
  "serde",
  "serde_json",
+ "syn 3.0.9",
 ]
 
 [[package]]

@@ -1,0 +1,138 @@
+refs
+
+=== fizzbuzz
+fn fizzbuzz(n: u32) -> Vec<String> {
+    (1..=n).map(|i| match (i % 3, i % 5) { (0, 0) => "FizzBuzz".into(), (0, _) => "Fizz".into(), (_, 0) => "Buzz".into(), _ => i.to_string() }).collect()
+}
+
+=== palindrome
+fn is_palindrome(s: &str) -> bool {
+    let c: Vec<char> = s.chars().filter(|c| c.is_alphanumeric()).flat_map(|c| c.to_lowercase()).collect();
+    c.iter().eq(c.iter().rev())
+}
+
+=== word_freq
+use std::collections::HashMap;
+fn word_freq(text: &str) -> Vec<(String, usize)> {
+    let mut m: HashMap<String, usize> = HashMap::new();
+    for w in text.split(|c: char| !c.is_alphabetic()).filter(|w| !w.is_empty()) { *m.entry(w.to_lowercase()).or_default() += 1; }
+    let mut v: Vec<_> = m.into_iter().collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    v
+}
+
+=== stack
+pub struct Stack<T> { items: Vec<T> }
+impl<T> Stack<T> {
+    pub fn new() -> Self { Stack { items: Vec::new() } }
+    pub fn push(&mut self, item: T) { self.items.push(item) }
+    pub fn pop(&mut self) -> Option<T> { self.items.pop() }
+    pub fn peek(&self) -> Option<&T> { self.items.last() }
+    pub fn len(&self) -> usize { self.items.len() }
+    pub fn is_empty(&self) -> bool { self.items.is_empty() }
+}
+impl<T> Default for Stack<T> { fn default() -> Self { Self::new() } }
+
+=== binary_search
+fn binary_search<T: Ord>(items: &[T], target: &T) -> Option<usize> {
+    let (mut lo, mut hi) = (0, items.len());
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        match items[mid].cmp(target) { std::cmp::Ordering::Less => lo = mid + 1, std::cmp::Ordering::Greater => hi = mid, _ => return Some(mid) }
+    }
+    None
+}
+
+=== rpn
+fn eval_rpn(expr: &str) -> Result<i64, String> {
+    let mut st: Vec<i64> = vec![];
+    for tok in expr.split_whitespace() {
+        match tok {
+            "+" | "-" | "*" | "/" => {
+                let b = st.pop().ok_or("faltan operandos")?; let a = st.pop().ok_or("faltan operandos")?;
+                st.push(match tok { "+" => a + b, "-" => a - b, "*" => a * b, _ => { if b == 0 { return Err("div 0".into()) } a / b } });
+            }
+            t => st.push(t.parse().map_err(|_| format!("token {t}"))?),
+        }
+    }
+    if st.len() == 1 { Ok(st[0]) } else { Err("sobran".into()) }
+}
+
+=== matmul
+fn mat_mul(a: &[Vec<f64>], b: &[Vec<f64>]) -> Option<Vec<Vec<f64>>> {
+    let n = a.first()?.len(); let p = b.first()?.len();
+    if a.iter().any(|r| r.len() != n) || b.iter().any(|r| r.len() != p) || b.len() != n { return None; }
+    Some(a.iter().map(|r| (0..p).map(|j| (0..n).map(|k| r[k] * b[k][j]).sum()).collect()).collect())
+}
+
+=== linked_list
+#[derive(Debug, PartialEq)]
+pub struct Node { pub val: i32, pub next: Option<Box<Node>> }
+fn from_vec(v: &[i32]) -> Option<Box<Node>> { let mut h = None; for &x in v.iter().rev() { h = Some(Box::new(Node { val: x, next: h })); } h }
+fn to_vec(head: &Option<Box<Node>>) -> Vec<i32> { let mut v = vec![]; let mut c = head; while let Some(n) = c { v.push(n.val); c = &n.next; } v }
+fn reverse(mut head: Option<Box<Node>>) -> Option<Box<Node>> { let mut prev = None; while let Some(mut n) = head { head = n.next.take(); n.next = prev; prev = Some(n); } prev }
+
+=== shapes
+pub trait Shape { fn area(&self) -> f64; fn name(&self) -> String; }
+pub struct Circle { pub radius: f64 }
+pub struct Rect { pub w: f64, pub h: f64 }
+impl Shape for Circle { fn area(&self) -> f64 { std::f64::consts::PI * self.radius * self.radius } fn name(&self) -> String { "círculo".into() } }
+impl Shape for Rect { fn area(&self) -> f64 { self.w * self.h } fn name(&self) -> String { "rectángulo".into() } }
+fn total_area(shapes: &[Box<dyn Shape>]) -> f64 { shapes.iter().map(|s| s.area()).sum() }
+fn largest(shapes: &[Box<dyn Shape>]) -> Option<String> { shapes.iter().max_by(|a, b| a.area().total_cmp(&b.area())).map(|s| s.name()) }
+
+=== longest_word
+fn longest_word(s: &str) -> Option<&str> {
+    let mut best: Option<(&str, usize)> = None;
+    for w in s.split_whitespace() { let n = w.chars().count(); if best.map_or(true, |(_, b)| n > b) { best = Some((w, n)); } }
+    best.map(|(w, _)| w)
+}
+
+=== parallel_sum
+fn parallel_sum(data: &[u64], threads: usize) -> u64 {
+    let t = threads.max(1); let chunk = (data.len() + t - 1) / t;
+    if chunk == 0 { return 0; }
+    std::thread::scope(|s| data.chunks(chunk).map(|c| s.spawn(move || c.iter().sum::<u64>())).collect::<Vec<_>>().into_iter().map(|h| h.join().unwrap()).sum())
+}
+
+=== fib_iter
+pub struct Fib { cur: Option<u64>, next: Option<u64> }
+impl Iterator for Fib { type Item = u64; fn next(&mut self) -> Option<u64> { let c = self.cur?; self.cur = self.next; self.next = match self.next { Some(n) => n.checked_add(c), None => None }; Some(c) } }
+fn fib() -> Fib { Fib { cur: Some(0), next: Some(1) } }
+
+=== dijkstra
+use std::collections::BinaryHeap; use std::cmp::Reverse;
+fn shortest_path(n: usize, edges: &[(usize, usize, u32)], src: usize, dst: usize) -> Option<u32> {
+    let mut adj = vec![vec![]; n]; for &(a, b, w) in edges { adj[a].push((b, w)); }
+    let mut dist = vec![u32::MAX; n]; dist[src] = 0; let mut h = BinaryHeap::new(); h.push(Reverse((0u32, src)));
+    while let Some(Reverse((d, u))) = h.pop() { if d > dist[u] { continue; } for &(v, w) in &adj[u] { let nd = d + w; if nd < dist[v] { dist[v] = nd; h.push(Reverse((nd, v))); } } }
+    (dist[dst] != u32::MAX).then_some(dist[dst])
+}
+
+=== config
+use std::collections::HashMap;
+#[derive(Debug, PartialEq)]
+pub enum ConfigError { MissingEquals { line: usize }, EmptyKey { line: usize }, DuplicateKey { key: String, line: usize } }
+fn parse_config(input: &str) -> Result<HashMap<String, String>, ConfigError> {
+    let mut m = HashMap::new();
+    for (i, l) in input.lines().enumerate() {
+        let line = i + 1; let t = l.trim(); if t.is_empty() || t.starts_with('#') { continue; }
+        let (k, v) = t.split_once('=').ok_or(ConfigError::MissingEquals { line })?;
+        let k = k.trim(); if k.is_empty() { return Err(ConfigError::EmptyKey { line }); }
+        if m.insert(k.to_string(), v.trim().to_string()).is_some() { return Err(ConfigError::DuplicateKey { key: k.into(), line }); }
+    }
+    Ok(m)
+}
+
+=== borrow_fix
+fn add_suffix(names: &mut Vec<String>) {
+    let extra: Vec<String> = names.iter().filter(|n| n.len() < 3).map(|n| format!("{}_x", n)).collect();
+    names.extend(extra);
+}
+
+=== group_by
+fn group_by<T, K, F>(items: Vec<T>, key: F) -> std::collections::BTreeMap<K, Vec<T>> where K: Ord, F: Fn(&T) -> K {
+    let mut m = std::collections::BTreeMap::new();
+    for it in items { m.entry(key(&it)).or_insert_with(Vec::new).push(it); }
+    m
+}

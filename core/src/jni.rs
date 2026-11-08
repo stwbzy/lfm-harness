@@ -115,6 +115,12 @@ struct TurnParams {
     tools: Vec<String>,
     #[serde(default)]
     now: String,
+    #[serde(default = "default_true")]
+    code_mode: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Runs one user turn (with tool loop). `store` is a `NativeStore` handle or 0.
@@ -148,6 +154,8 @@ pub extern "system" fn Java_dev_stwby_lfmharness_engine_NativeEngine_generate<'l
             enabled_tools: &params.tools,
             now: &params.now,
             limits: &limits,
+            code_mode: params.code_mode,
+            repair_attempt: 0,
         };
 
         s.cancel.store(false, Ordering::Relaxed);
