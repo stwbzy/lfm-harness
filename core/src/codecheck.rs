@@ -29,6 +29,14 @@ const CODE_WORDS: &[&str] = &[
     "write a function", "write code", "code ", "function ",
 ];
 
+/// Phrases of a conceptual question ("qué es Rust", "explica…"): a language name
+/// alone in such a message is not a request for code.
+const QUESTION_WORDS: &[&str] = &[
+    "qué es", "que es", "qué son", "que son", "explica", "explícame", "explicame", "por qué", "por que",
+    "diferencia", "ventajas", "cuál", "cual ", "cómo funciona", "como funciona", "what is", "what are", "explain",
+    "why ", "difference", "who ", "quién", "quien ", "historia", "cuéntame", "cuentame",
+];
+
 /// Ordered so that longer names win (`javascript` before `java`).
 const LANGS: &[(&str, &[&str])] = &[
     ("rust", &["rust", ".rs "]),
@@ -52,8 +60,11 @@ pub fn detect_code_intent(text: &str) -> Option<CodeIntent> {
     let t = format!(" {} ", text.to_lowercase());
     let lang = LANGS.iter().find(|(_, keys)| keys.iter().any(|k| t.contains(k))).map(|(l, _)| *l);
     let asks_code = CODE_WORDS.iter().any(|w| t.contains(w));
-    // A language name alone ("hazlo en rust") also counts.
-    (asks_code || lang.is_some_and(|l| l != "c" && l != "go")).then_some(CodeIntent { lang })
+    // A language name alone ("hazlo en rust") also counts, unless the message is
+    // a conceptual question about the language ("qué es Rust").
+    let asks_concept = QUESTION_WORDS.iter().any(|w| t.contains(w));
+    let lang_only = !asks_concept && lang.is_some_and(|l| l != "c" && l != "go");
+    (asks_code || lang_only).then_some(CodeIntent { lang })
 }
 
 /// Contents of the first fenced block (accepting an unterminated one).
@@ -188,6 +199,9 @@ mod tests {
         assert_eq!(detect_code_intent("implementa un algoritmo de ordenación"), Some(CodeIntent { lang: None }));
         assert_eq!(detect_code_intent("¿qué tiempo hace hoy?"), None);
         assert_eq!(detect_code_intent("cuéntame un chiste"), None);
+        assert_eq!(detect_code_intent("Explica en dos frases que es Rust"), None);
+        assert_eq!(detect_code_intent("what is python?"), None);
+        assert_eq!(detect_code_intent("hazlo en rust"), Some(CodeIntent { lang: Some("rust") }));
         assert_eq!(CodeIntent { lang: Some("rust") }.prefill(), "```rust\n");
     }
 
