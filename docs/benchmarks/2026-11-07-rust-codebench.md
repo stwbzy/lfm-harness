@@ -26,7 +26,7 @@ tests: `core/bench/refs.txt` (`codebench --refs`, 16/16 pasan).
 | B | sin modo código, con razonamiento | incompleta (6 de 16) | 0/6 → 2/6 | 6991 |
 | C | modo código, sin razonamiento, repair 2 (repair a temp 0.15) | **1/16** | **3/16** | 1269 |
 | D | modo código + razonamiento limitado a 384 tokens, repair 2 (repair a temp 0.15) | **5/16** | **7/16** | 2503 |
-| C′ | igual que C, reparaciones a temp ≥ 0.6 y semilla nueva | PENDIENTE | PENDIENTE | |
+| C′ | igual que C, reparaciones a temp ≥ 0.6 y semilla nueva | **1/16** | **3/16** | 1424 |
 
 Datos crudos en `docs/benchmarks/data/` (JSONL por intento, y resumen en TXT).
 Recuento con `docs/benchmarks/data/score.py`.
@@ -42,7 +42,10 @@ Notas sobre cada pasada:
 - **D** es la mejor configuración medida. Razonar un poco (384 tokens) ayuda; sin límite, el
   modelo no llega a escribir código.
 - **C′** prueba si subir la temperatura de la reparación (≥ 0.6) y cambiar la semilla rompe el
-  bucle de respuestas idénticas. Pendiente de completar.
+  bucle de respuestas idénticas. Resultado: no mejora (1/16 → 3/16, igual que C; aprueban `palindrome` y `binary_search`
+  tras reparar). Las reparaciones idénticas bajan de 9 a 5 de 28, pero el cambio no se
+  traduce en más aciertos: el modelo sigue sin corregir errores como E0599 (`stack`,
+  `matmul`, `group_by`) aunque cambie de respuesta. Datos: `bench_harness_repairtemp.*`.
 
 ## Qué falla
 
@@ -73,8 +76,8 @@ Clasificación de los fallos en la pasada C (sin razonamiento), donde hay más c
   razonamiento (384 tokens): 1 → 5 aciertos a la primera. Consistente con que el modelo
   necesita "pensar" un poco antes de escribir, pero no mucho.
 - **`syn` y la reparación automática funcionan.** En D reparó automáticamente la sintaxis en
-  varios casos (`palindrome`, `word_freq`, `rpn`); en C′ se observará si la reparación con
-  temperatura alta es mejor que la de 0.15.
+  varios casos (`palindrome`, `word_freq`, `rpn`); en C′ la reparación con
+  temperatura alta no resultó mejor que la de 0.15.
 - **Los fallos lógicos dominan al final.** Los casos que ya compilan (`rpn`, `longest_word`,
   `fib_iter`) fallan los tests por lógica, no por tipos. Ese error no lo detecta `syn` ni
   rustc; solo los tests.
@@ -84,7 +87,8 @@ Clasificación de los fallos en la pasada C (sin razonamiento), donde hay más c
 
 ## Propuestas (roadmap, item 7)
 
-1. Confirmar C′ (reparación a temperatura ≥ 0.6, semilla distinta por intento).
+1. C′ confirmado sin mejora: la temperatura alta en la reparación reduce las respuestas
+   repetidas (9 → 5 de 28) pero no los fallos; el cuello de botella es la capacidad del modelo.
 2. Usar D como configuración de referencia para el modo código: razonamiento limitado a
    384 tokens y repair 2.
 3. Añadir a las reparaciones una frase fija sobre el error más frecuente de la tarea (E0308,
