@@ -3,6 +3,7 @@
 pub mod chat;
 pub mod engine;
 mod jni;
+pub mod store;
 
 pub use chat::{Message, Role};
 pub use engine::{Engine, EngineConfig, Event, GenParams, GenStats};

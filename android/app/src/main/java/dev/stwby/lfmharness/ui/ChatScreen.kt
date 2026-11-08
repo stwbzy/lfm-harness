@@ -28,6 +28,22 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationDrawerItem
+import androidx.compose.material3.rememberDrawerState
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.text.style.TextOverflow
+import dev.stwby.lfmharness.data.Conversation
+import kotlinx.coroutines.launch
+import java.text.DateFormat
+import java.util.Date
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
@@ -78,14 +94,39 @@ fun ChatScreen(vm: ChatViewModel) {
         }
     }
 
+    val drawer = rememberDrawerState(DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+    ModalNavigationDrawer(
+        drawerState = drawer,
+        drawerContent = {
+            ConversationDrawer(
+                conversations = state.conversations,
+                currentId = state.currentId,
+                enabled = !state.generating,
+                onNew = { vm.newChat(); scope.launch { drawer.close() } },
+                onSelect = { vm.selectConversation(it); scope.launch { drawer.close() } },
+                onRename = vm::renameConversation,
+                onDelete = vm::deleteConversation,
+            )
+        },
+    ) {
     Scaffold(
         modifier = Modifier.imePadding(),
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
             TopAppBar(
+                navigationIcon = {
+                    IconButton(onClick = { scope.launch { drawer.open() } }) {
+                        Icon(Icons.Default.Menu, "Chats")
+                    }
+                },
                 title = {
                     Column {
-                        Text("LFM Harness")
+                        Text(
+                            state.conversations.firstOrNull { it.id == state.currentId }?.title ?: "Nuevo chat",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                         Text(modelLabel(state.model), style = MaterialTheme.typography.labelSmall)
                     }
                 },
@@ -126,12 +167,110 @@ fun ChatScreen(vm: ChatViewModel) {
             )
         }
     }
+    }
 
     if (showSettings) {
         SettingsDialog(state.settings, onDismiss = { showSettings = false }) {
             vm.updateSettings(it)
             showSettings = false
         }
+    }
+}
+
+@Composable
+private fun ConversationDrawer(
+    conversations: List<Conversation>,
+    currentId: Long?,
+    enabled: Boolean,
+    onNew: () -> Unit,
+    onSelect: (Long) -> Unit,
+    onRename: (Long, String) -> Unit,
+    onDelete: (Long) -> Unit,
+) {
+    var renaming by remember { mutableStateOf<Conversation?>(null) }
+    var deleting by remember { mutableStateOf<Conversation?>(null) }
+    val dateFmt = remember { DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT) }
+
+    ModalDrawerSheet(Modifier.widthIn(max = 320.dp)) {
+        Text("Chats", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(16.dp))
+        NavigationDrawerItem(
+            label = { Text("Nuevo chat") },
+            icon = { Icon(Icons.Default.Add, null) },
+            selected = currentId == null,
+            onClick = { if (enabled) onNew() },
+            modifier = Modifier.padding(horizontal = 12.dp),
+        )
+        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+        if (conversations.isEmpty()) {
+            Text(
+                "Aún no hay conversaciones.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 28.dp),
+            )
+        }
+        LazyColumn {
+            items(conversations, key = { it.id }) { c ->
+                var menu by remember { mutableStateOf(false) }
+                NavigationDrawerItem(
+                    label = {
+                        Column {
+                            Text(c.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(
+                                dateFmt.format(Date(c.updatedAt)),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    },
+                    selected = c.id == currentId,
+                    onClick = { if (enabled) onSelect(c.id) },
+                    badge = {
+                        Box {
+                            IconButton(onClick = { menu = true }, enabled = enabled) {
+                                Icon(Icons.Default.MoreVert, "Opciones")
+                            }
+                            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("Renombrar") },
+                                    onClick = { menu = false; renaming = c },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Borrar") },
+                                    onClick = { menu = false; deleting = c },
+                                )
+                            }
+                        }
+                    },
+                    modifier = Modifier.padding(horizontal = 12.dp),
+                )
+            }
+        }
+    }
+
+    renaming?.let { c ->
+        var title by remember(c.id) { mutableStateOf(c.title) }
+        AlertDialog(
+            onDismissRequest = { renaming = null },
+            title = { Text("Renombrar chat") },
+            text = { OutlinedTextField(title, { title = it }, singleLine = true) },
+            confirmButton = {
+                TextButton(onClick = { onRename(c.id, title); renaming = null }, enabled = title.isNotBlank()) {
+                    Text("Guardar")
+                }
+            },
+            dismissButton = { TextButton(onClick = { renaming = null }) { Text("Cancelar") } },
+        )
+    }
+    deleting?.let { c ->
+        AlertDialog(
+            onDismissRequest = { deleting = null },
+            title = { Text("¿Borrar chat?") },
+            text = { Text("\"${c.title}\" se borrará permanentemente.") },
+            confirmButton = {
+                TextButton(onClick = { onDelete(c.id); deleting = null }) { Text("Borrar") }
+            },
+            dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancelar") } },
+        )
     }
 }
 

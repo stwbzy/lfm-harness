@@ -14,6 +14,7 @@ use jni::objects::{JClass, JObject, JString, JValue};
 use jni::sys::{jint, jlong, jstring};
 use serde::{Deserialize, Serialize};
 
+use crate::store::{NewMessage, Store, title_from};
 use crate::{Engine, EngineConfig, Event, GenParams, Message, Role};
 
 struct Session {
@@ -176,17 +177,124 @@ pub extern "system" fn Java_dev_stwby_lfmharness_engine_NativeEngine_generate<'l
     })
 }
 
+fn parse_role(s: &str) -> Result<Role> {
+    Ok(match s {
+        "system" => Role::System,
+        "user" => Role::User,
+        "assistant" => Role::Assistant,
+        other => return Err(anyhow!("unknown role {other}")),
+    })
+}
+
 fn parse_messages(json: &str) -> Result<Vec<Message>> {
     let raw: Vec<JsonMessage> = serde_json::from_str(json).context("invalid messages")?;
     raw.into_iter()
-        .map(|m| {
-            let role = match m.role.as_str() {
-                "system" => Role::System,
-                "user" => Role::User,
-                "assistant" => Role::Assistant,
-                other => return Err(anyhow!("unknown role {other}")),
-            };
-            Ok(Message { role, content: m.content })
-        })
+        .map(|m| Ok(Message { role: parse_role(&m.role)?, content: m.content }))
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Conversation store: `dev.stwby.lfmharness.data.NativeStore`
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_stwby_lfmharness_data_NativeStore_open<'l>(
+    mut env: JNIEnv<'l>,
+    _cls: JClass<'l>,
+    path: JString<'l>,
+) -> jlong {
+    let result = (|| -> Result<jlong> {
+        let path: String = env.get_string(&path)?.into();
+        let store = Store::open(path)?;
+        Ok(Box::into_raw(Box::new(Mutex::new(store))) as jlong)
+    })();
+    result.unwrap_or_else(|e| {
+        throw(&mut env, &e);
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_stwby_lfmharness_data_NativeStore_close<'l>(
+    _env: JNIEnv<'l>,
+    _cls: JClass<'l>,
+    handle: jlong,
+) {
+    if handle != 0 {
+        drop(unsafe { Box::from_raw(handle as *mut Mutex<Store>) });
+    }
+}
+
+/// Runs store operation `op` with JSON `args`; returns JSON.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_stwby_lfmharness_data_NativeStore_call<'l>(
+    mut env: JNIEnv<'l>,
+    _cls: JClass<'l>,
+    handle: jlong,
+    op: JString<'l>,
+    args: JString<'l>,
+) -> jstring {
+    let result = (|| -> Result<jstring> {
+        let store = unsafe { (handle as *const Mutex<Store>).as_ref() }.ok_or_else(|| anyhow!("store closed"))?;
+        let op: String = env.get_string(&op)?.into();
+        let args: String = env.get_string(&args)?.into();
+        let args: serde_json::Value = serde_json::from_str(&args).context("invalid args")?;
+        let store = store.lock().map_err(|_| anyhow!("store poisoned"))?;
+        let out = store_call(&store, &op, &args)?;
+        Ok(env.new_string(out.to_string())?.into_raw())
+    })();
+    result.unwrap_or_else(|e| {
+        throw(&mut env, &e);
+        std::ptr::null_mut()
+    })
+}
+
+fn store_call(store: &Store, op: &str, a: &serde_json::Value) -> Result<serde_json::Value> {
+    use serde_json::{Value, to_value};
+    let id = |k: &str| a[k].as_i64().ok_or_else(|| anyhow!("missing integer `{k}`"));
+    let text = |k: &str| a[k].as_str().ok_or_else(|| anyhow!("missing string `{k}`"));
+    Ok(match op {
+        "list" => to_value(store.list_conversations()?)?,
+        "create" => to_value(store.create_conversation(&title_from(text("first_message")?))?)?,
+        "rename" => {
+            store.rename_conversation(id("id")?, text("title")?)?;
+            Value::Null
+        }
+        "delete" => {
+            store.delete_conversation(id("id")?)?;
+            Value::Null
+        }
+        "messages" => to_value(store.messages(id("id")?)?)?,
+        "add_message" => to_value(store.add_message(
+            id("conversation_id")?,
+            &NewMessage {
+                role: parse_role(text("role")?)?,
+                content: text("content")?,
+                reasoning: a["reasoning"].as_str().unwrap_or(""),
+                stats: a["stats"].as_str(),
+            },
+        )?)?,
+        other => return Err(anyhow!("unknown store op `{other}`")),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn store_ops_via_json() {
+        let s = Store::open_in_memory().unwrap();
+        let c = store_call(&s, "create", &json!({"first_message": "Hola zorro"})).unwrap();
+        assert_eq!(c["title"], "Hola zorro");
+        let id = c["id"].as_i64().unwrap();
+        store_call(&s, "add_message", &json!({"conversation_id": id, "role": "user", "content": "hola"})).unwrap();
+        let m = store_call(&s, "messages", &json!({"id": id})).unwrap();
+        assert_eq!(m[0]["content"], "hola");
+        assert!(m[0]["stats"].is_null());
+        store_call(&s, "rename", &json!({"id": id, "title": "x"})).unwrap();
+        assert_eq!(store_call(&s, "list", &json!({})).unwrap()[0]["title"], "x");
+        assert!(store_call(&s, "nope", &json!({})).is_err());
+        assert!(store_call(&s, "delete", &json!({})).is_err());
+    }
 }

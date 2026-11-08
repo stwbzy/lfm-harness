@@ -6,6 +6,8 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import dev.stwby.lfmharness.HarnessApp
+import dev.stwby.lfmharness.data.Conversation
 import dev.stwby.lfmharness.engine.GenEvent
 import dev.stwby.lfmharness.engine.GenParams
 import dev.stwby.lfmharness.engine.LlmEngine
@@ -47,6 +49,9 @@ sealed interface ModelState {
 
 data class UiState(
     val messages: List<UiMessage> = emptyList(),
+    val conversations: List<Conversation> = emptyList(),
+    /** Null until the first message of a new chat is sent. */
+    val currentId: Long? = null,
     val model: ModelState = ModelState.None,
     val generating: Boolean = false,
     val settings: Settings = Settings(),
@@ -56,9 +61,11 @@ data class UiState(
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = app.getSharedPreferences("harness", Context.MODE_PRIVATE)
     private val modelsDir = File(app.filesDir, "models").apply { mkdirs() }
+    private val repo = (app as HarnessApp).chats
     private val _state = MutableStateFlow(UiState(settings = loadSettings()))
     val state: StateFlow<UiState> = _state.asStateFlow()
-    private var nextId = 0L
+    /** Negative ids for messages not yet loaded from the database. */
+    private var tempId = -1L
     private var genJob: Job? = null
 
     init {
@@ -66,6 +73,64 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (path != null && File(path).isFile) {
             if (LlmEngine.isLoaded) _state.update { it.copy(model = ModelState.Ready(File(path).name)) }
             else loadModel(File(path))
+        }
+        viewModelScope.launch {
+            try {
+                refreshConversations()
+                val last = prefs.getLong("last_conversation", -1L)
+                if (_state.value.conversations.any { it.id == last }) openConversation(last)
+            } catch (e: Exception) {
+                _state.update { it.copy(error = "Historial no disponible: ${e.message}") }
+            }
+        }
+    }
+
+    private suspend fun refreshConversations() {
+        val list = repo.conversations()
+        _state.update { it.copy(conversations = list) }
+    }
+
+    private suspend fun openConversation(id: Long) {
+        val msgs = repo.messages(id).map {
+            UiMessage(it.id, it.role, it.content, it.reasoning, stats = it.stats)
+        }
+        _state.update { it.copy(currentId = id, messages = msgs, error = null) }
+        prefs.edit().putLong("last_conversation", id).apply()
+    }
+
+    fun selectConversation(id: Long) {
+        if (_state.value.generating || id == _state.value.currentId) return
+        viewModelScope.launch {
+            try {
+                openConversation(id)
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message) }
+            }
+        }
+    }
+
+    fun deleteConversation(id: Long) {
+        if (_state.value.generating) return
+        viewModelScope.launch {
+            try {
+                repo.delete(id)
+                if (_state.value.currentId == id) newChat()
+                refreshConversations()
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message) }
+            }
+        }
+    }
+
+    fun renameConversation(id: Long, title: String) {
+        if (title.isBlank()) return
+        viewModelScope.launch {
+            try {
+                repo.rename(id, title.trim())
+                refreshConversations()
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message) }
+            }
         }
     }
 
@@ -137,8 +202,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun send(text: String) {
         val s = _state.value
         if (text.isBlank() || s.generating || s.model !is ModelState.Ready) return
-        val user = UiMessage(nextId++, Role.User, text.trim())
-        val reply = UiMessage(nextId++, Role.Assistant, streaming = true)
+        val user = UiMessage(tempId--, Role.User, text.trim())
+        val reply = UiMessage(tempId--, Role.Assistant, streaming = true)
         val history = s.messages + user
         _state.update { it.copy(messages = history + reply, generating = true, error = null) }
 
@@ -153,7 +218,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         )
         genJob = viewModelScope.launch {
             var inReasoning = params.enableThinking
+            var convId: Long? = s.currentId
             try {
+                // Persist the user turn first so it survives a crash mid-generation.
+                if (convId == null) {
+                    convId = repo.create(user.content).id
+                    _state.update { it.copy(currentId = convId) }
+                    prefs.edit().putLong("last_conversation", convId).apply()
+                }
+                repo.addMessage(convId, Role.User, user.content)
+                refreshConversations()
+
                 val stats = LlmEngine.generate(turns, params) { ev ->
                     // `update` may retry its lambda, so keep side effects outside it.
                     when (ev) {
@@ -181,8 +256,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 updateMessage(reply.id) {
                     it.copy(content = it.content.trim(), reasoning = it.reasoning.trim(), streaming = false, stats = info)
                 }
+                val done = _state.value.messages.first { it.id == reply.id }
+                if (done.content.isNotEmpty() || done.reasoning.isNotEmpty()) {
+                    repo.addMessage(convId, Role.Assistant, done.content, done.reasoning, done.stats)
+                } else {
+                    removeMessage(reply.id)
+                }
+                refreshConversations()
             } catch (e: Exception) {
+                // Keep whatever was streamed on screen; it is not saved.
                 updateMessage(reply.id) { it.copy(streaming = false) }
+                if (_state.value.messages.first { it.id == reply.id }.let { it.content.isEmpty() && it.reasoning.isEmpty() }) {
+                    removeMessage(reply.id)
+                }
                 _state.update { it.copy(error = e.message) }
             } finally {
                 _state.update { it.copy(generating = false) }
@@ -192,10 +278,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun stop() = LlmEngine.cancel()
 
+    /** Clears the screen; the conversation row is created on the first message. */
     fun newChat() {
         if (_state.value.generating) return
-        _state.update { it.copy(messages = emptyList(), error = null) }
-        viewModelScope.launch { LlmEngine.reset() }
+        _state.update { it.copy(messages = emptyList(), currentId = null, error = null) }
+        prefs.edit().remove("last_conversation").apply()
+    }
+
+    private fun removeMessage(id: Long) = _state.update { s ->
+        s.copy(messages = s.messages.filterNot { it.id == id })
     }
 
     fun dismissError() = _state.update { it.copy(error = null) }
