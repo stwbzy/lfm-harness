@@ -39,7 +39,7 @@ El modelo de uso diario es el fine-tune `LFM3-1.7B-Uncensored-AD`. Antes de camb
 - [ ] Explicación opcional tras el bloque de código (segunda generación corta).
 
 ### 8. Gestión de modelos
-- [x] Varios modelos importados, cambiar entre ellos y borrar los inactivos; el tamaño de cada uno se ve en el menú (toca el nombre del modelo en la barra superior). Probado: compila; falta la prueba en el móvil.
+- [x] Varios modelos importados, cambiar entre ellos y borrar los inactivos; el tamaño de cada uno se ve en el menú (toca el nombre del modelo en la barra superior). Probado en el CUBOT P90 con ambos modelos (importar, cambiar, generar).
 - [ ] Perfiles de muestreo por modelo.
 
 ### 9. Robustez y experiencia
