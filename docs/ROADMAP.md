@@ -8,13 +8,13 @@ lo que modifica datos pasa por el usuario. Las decisiones se toman con datos med
 
 | Fase | Contenido | Commit |
 |---|---|---|
-| 1. Spike | `llama-cpp-2` (git, con `lfm3`) compilado con cargo-ndk; ~10 tok/s en Helio G99 | `9014677` |
-| 2. Núcleo | streaming, cancelación, plantilla LFM3 propia, caché con checkpoints (modelo híbrido), recorte de historial | `9014677` |
-| 3. App | Kotlin/Compose: importar GGUF, chat, detener, ajustes | `9014677` |
-| 4. Persistencia | SQLite en Rust: chats, mensajes, menú lateral, renombrar/borrar | `a004673` |
-| 5. Herramientas | sandbox con lista blanca, límites, confirmación, saneado, avisos | `d889c05` |
-| — | Markdown nativo (pulldown-cmark → Compose) | `6446896` |
-| — | `codebench` + modo código (prefill, muestreo, límite de razonamiento, `syn`, errores resumidos) | este cambio |
+| 1. Spike | `llama-cpp-2` (git, con `lfm3`) compilado con cargo-ndk; ~10 tok/s en Helio G99 | `8eed5bb` |
+| 2. Núcleo | streaming, cancelación, plantilla LFM3 propia, caché con checkpoints (modelo híbrido), recorte de historial | `8eed5bb` |
+| 3. App | Kotlin/Compose: importar GGUF, chat, detener, ajustes | `8eed5bb` |
+| 4. Persistencia | SQLite en Rust: chats, mensajes, menú lateral, renombrar/borrar | `94d116e` |
+| 5. Herramientas | sandbox con lista blanca, límites, confirmación, saneado, avisos | `3bf51ef` |
+| — | Markdown nativo (pulldown-cmark → Compose) | `00bf087` |
+| — | `codebench` + modo código (prefill, muestreo, límite de razonamiento, `syn`, errores resumidos) | `b133e31` |
 
 ## Próximo
 
