@@ -104,3 +104,7 @@ cd core
 cargo run --release --example codebench -- MODEL.gguf --harness --repair 2
 cargo run --release --example codebench -- --refs REFS.txt   # valida los tests
 ```
+
+## Licencia
+
+[MIT](LICENSE). Los modelos LFM3 tienen su propia licencia (consulta la ficha en Hugging Face).
